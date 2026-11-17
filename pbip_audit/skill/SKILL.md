@@ -55,6 +55,10 @@ přidávej jen na jeho výslovné přání. `--baseline` = předchozí CSV tého
 Exit kód 3 a sekce „Model se nenačetl správně“ znamenají, že parser model nepřečetl – výsledky modelu pak nepoužívej,
 řekni to uživateli a nehádej.
 
+**Jazyk:** píše-li uživatel anglicky (nebo chce výstupy pro anglicky mluvícího klienta), přidej ke všem skriptům
+`--lang en` – nálezy, MD, CSV, HTML i šablona oprav budou anglicky (šablona má pak hlavičku object;type;action;value…).
+Shrnutí pak piš v jazyce uživatele. Vzor nastavení klienta s anglickými klíči je `settings_example.json`.
+
 Když skript skončí chybou, přečti hlášku – je psaná pro člověka (např. „report není PBIR“, „víc reportů – zadej .pbip“)
 a podle ní pokračuj; nepřepisuj kvůli tomu skripty.
 

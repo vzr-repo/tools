@@ -12,6 +12,8 @@ CSV (oddělovač ;, UTF-8): objekt;typ;akce;hodnota;nalez;kontext
         · dax (nový výraz míry; v šabloně předvyplněný jen přesný přepis, úpravy k ověření jsou ve sloupci kontext)
 Jen model TMDL (*.SemanticModel/definition/tables). Před zápisem měj projekt v gitu nebo zálohu a v Power BI Desktopu
 ho zavři – Desktop při uložení soubory přepíše.
+Anglicky: --lang en (šablona s hlavičkou object;type;action;value;finding;context, hodnoty table/column/measure,
+description/hide/folder/format/dax, yes/no); načíst jde šablona v kterémkoli jazyce.
 """
 from __future__ import annotations
 
@@ -22,12 +24,34 @@ import re
 import sys
 from pathlib import Path
 
+import jazyk
+from jazyk import L
 from kontroly import spust
 from pbip import Projekt, _odsazeni, _rozdel_deklaraci, _jmeno
+
+POPIS_EN = """Bulk fixes of a TMDL model from an approved proposal (CSV): descriptions, hidden fields, display folders, formats, DAX.
+
+    python oprav.py <project> --template fixes.csv --lang en   # 1) generate a proposal from the audit findings
+    (fill in the "value" column – by hand or with AI; rows with an empty value are skipped)
+    python oprav.py <project> fixes.csv                        # 2) preview: what will change (writes nothing)
+    python oprav.py <project> fixes.csv --write                # 3) write into the *.tmdl files
+
+CSV (separator ;, UTF-8): object;type;action;value;finding;context
+- object: Table  or  Table[Column / Measure]
+- type: table / column / measure (empty = looked up)
+- action: description (/// above the object) · hide (isHidden; value yes/no) · folder (displayFolder) · format (formatString)
+          · dax (new measure expression; the template pre-fills exact rewrites only, rewrites to verify are in context)
+TMDL models only (*.SemanticModel/definition/tables). Before writing, have the project in git or backed up and close it in
+Power BI Desktop – Desktop overwrites the files when it saves.
+"""
 
 POLE = ["objekt", "typ", "akce", "hodnota", "nalez", "kontext"]
 VLASTNOST = {"skryt": "isHidden", "slozka": "displayFolder", "format": "formatString"}
 AKCE = ("popis", "dax", *VLASTNOST)
+POLE_EN = ["object", "type", "action", "value", "finding", "context"]
+TYP_EN = {"table": "tabulka", "column": "sloupec", "measure": "mira"}
+AKCE_EN = {"description": "popis", "hide": "skryt", "folder": "slozka", "format": "format", "dax": "dax"}
+ANO = ("ano", "a", "yes", "y", "1", "true")
 
 
 # ------------------------------------------------------------------ šablona
@@ -48,7 +72,7 @@ def sablona(p: Projekt, soubor: Path):
             pridej(n.objekt, "tabulka", "popis", "", "M03", "")
         elif n.kod == "M02":
             s = sloupce.get(n.objekt)
-            pridej(n.objekt, "sloupec", "popis", "", "M02", f"typ {s.typ}" if s else "")
+            pridej(n.objekt, "sloupec", "popis", "", "M02", L(f"typ {s.typ}", f"type {s.typ}") if s else "")
         elif n.kod in ("M05", "M06") and n.objekt in sloupce:
             pridej(n.objekt, "sloupec", "skryt", "ano", n.kod, n.popis)
         elif n.kod == "M16":
@@ -62,20 +86,27 @@ def sablona(p: Projekt, soubor: Path):
     from audit import dax_navrhy
     for x in dax_navrhy(p, [n for n in spust(p) if n.oblast == "dax"]):
         if x["presny"]:
-            pozn = f"PŘESNÉ ({', '.join(x['kody_presne'])}) – stejný výsledek" + \
-                (" (u dělení nulou prázdno místo chyby)" if "D02" in x["kody_presne"] else "")
+            pozn = L(f"PŘESNÉ ({', '.join(x['kody_presne'])}) – stejný výsledek", f"EXACT ({', '.join(x['kody_presne'])}) – same result") + \
+                (L(" (u dělení nulou prázdno místo chyby)", " (blank instead of an error on division by zero)") if "D02" in x["kody_presne"] else "")
             if x["vse"]:
-                pozn += f" | K OVĚŘENÍ ({', '.join(x['kody_vse'])}): {x['vse']}"
+                pozn += L(f" | K OVĚŘENÍ ({', '.join(x['kody_vse'])}): {x['vse']}", f" | TO VERIFY ({', '.join(x['kody_vse'])}): {x['vse']}")
             radky.append([x["objekt"], "mira", "dax", x["presny"], "D", pozn])
         elif x["vse"]:
             radky.append([x["objekt"], "mira", "dax", "", "D",
-                          f"K OVĚŘENÍ ({', '.join(x['kody_vse'])}) – po kontrole zkopíruj do hodnota: {x['vse']}"])
+                          L(f"K OVĚŘENÍ ({', '.join(x['kody_vse'])}) – po kontrole zkopíruj do hodnota: {x['vse']}",
+                            f"TO VERIFY ({', '.join(x['kody_vse'])}) – after checking, copy into value: {x['vse']}")])
     with open(soubor, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
-        w.writerow(POLE)
-        w.writerows(radky)
-    print(f"Šablona: {len(radky)} řádků -> {soubor}")
-    print("Doplň „hodnota“ (popis / složka / formát; u skrytí ano/ne), prázdné řádky se přeskočí. Pak: oprav.py <projekt> návrh.csv")
+        if jazyk.en():
+            typy, akce = {v: k for k, v in TYP_EN.items()}, {v: k for k, v in AKCE_EN.items()}
+            w.writerow(POLE_EN)
+            w.writerows([[o, typy.get(t, t), akce.get(a, a), "yes" if h == "ano" else h, n, k] for o, t, a, h, n, k in radky])
+        else:
+            w.writerow(POLE)
+            w.writerows(radky)
+    print(L(f"Šablona: {len(radky)} řádků -> {soubor}", f"Template: {len(radky)} rows -> {soubor}"))
+    print(L("Doplň „hodnota“ (popis / složka / formát; u skrytí ano/ne), prázdné řádky se přeskočí. Pak: oprav.py <projekt> návrh.csv",
+            "Fill in \"value\" (description / folder / format; yes/no for hide), empty rows are skipped. Then: oprav.py <project> fixes.csv"))
 
 
 # ------------------------------------------------------------------ úpravy TMDL
@@ -113,7 +144,7 @@ class Soubor:
             klic = {"mira": "measure ", "sloupec": "column "}.get(typ)
             if klic and o == 1 and s.startswith(klic) and _rozdel_deklaraci(s[len(klic):])[0] == nazev:
                 return i
-        raise KeyError(f"{typ} {nazev} nenalezen v {self.cesta.name}")
+        raise KeyError(L(f"{typ} {nazev} nenalezen v {self.cesta.name}", f"{typ} {nazev} not found in {self.cesta.name}"))
 
     def popis(self, typ, nazev, text):
         i = self.najdi(typ, nazev)
@@ -185,12 +216,20 @@ class Soubor:
 def nacti_navrh(soubor: Path) -> list[dict]:
     with open(soubor, newline="", encoding="utf-8-sig") as f:
         prvni = f.readline(); f.seek(0)
-        return list(csv.DictReader(f, delimiter=";" if prvni.count(";") >= prvni.count(",") else ","))
+        radky = list(csv.DictReader(f, delimiter=";" if prvni.count(";") >= prvni.count(",") else ","))
+    out = []                                                                    # anglická šablona -> interní (české) klíče a hodnoty
+    for r in radky:
+        r = {dict(zip(POLE_EN, POLE)).get(k, k): h for k, h in r.items()}
+        r["typ"] = TYP_EN.get((r.get("typ") or "").strip().lower(), r.get("typ"))
+        r["akce"] = AKCE_EN.get((r.get("akce") or "").strip().lower(), r.get("akce"))
+        out.append(r)
+    return out
 
 
 def proved(p: Projekt, navrh: list[dict], zapsat: bool) -> int:
     if p.format_modelu != "TMDL":
-        sys.exit(f"Opravy umí jen model TMDL (tento: {p.format_modelu}). V Desktopu: Soubor → Možnosti → Funkce verze Preview → TMDL.")
+        sys.exit(L(f"Opravy umí jen model TMDL (tento: {p.format_modelu}). V Desktopu: Soubor → Možnosti → Funkce verze Preview → TMDL.",
+                   f"Fixes only work on a TMDL model (this one: {p.format_modelu}). In Desktop: File → Options → Preview features → TMDL."))
     tabulky = {t.nazev: t for t in p.tabulky}
     miry = {(m.tabulka, m.nazev) for m in p.miry}
     sloupce = {(s.tabulka, s.nazev) for s in p.sloupce}
@@ -203,13 +242,13 @@ def proved(p: Projekt, navrh: list[dict], zapsat: bool) -> int:
         tab, pole = tab.strip().strip("'"), pole.rstrip("]")
         typ = (r.get("typ") or "").strip().lower() or ("tabulka" if not pole else "mira" if (tab, pole) in miry else "sloupec")
         if tab not in tabulky or (typ == "mira" and (tab, pole) not in miry) or (typ == "sloupec" and (tab, pole) not in sloupce):
-            chyby.append(f"{objekt}: objekt v modelu není"); continue
+            chyby.append(L(f"{objekt}: objekt v modelu není", f"{objekt}: object is not in the model")); continue
         if akce not in AKCE:
-            chyby.append(f"{objekt}: neznámá akce „{akce}“"); continue
+            chyby.append(L(f"{objekt}: neznámá akce „{akce}“", f"{objekt}: unknown action \"{akce}\"")); continue
         if akce == "slozka" and typ == "tabulka":
-            chyby.append(f"{objekt}: složka jde jen u míry / sloupce"); continue
+            chyby.append(L(f"{objekt}: složka jde jen u míry / sloupce", f"{objekt}: a folder only applies to a measure / column")); continue
         if akce == "dax" and typ != "mira":
-            chyby.append(f"{objekt}: akce dax jde jen u míry"); continue
+            chyby.append(L(f"{objekt}: akce dax jde jen u míry", f"{objekt}: action dax only applies to a measure")); continue
         f = tabulky[tab].soubor
         s = soubory.setdefault(f, Soubor(f))
         nazev = tab if typ == "tabulka" else pole
@@ -219,7 +258,7 @@ def proved(p: Projekt, navrh: list[dict], zapsat: bool) -> int:
             elif akce == "dax":
                 s.vyraz(nazev, (r.get("hodnota") or "").strip("\r\n"))
             elif akce == "skryt":
-                s.vlastnost(typ, nazev, "isHidden", True if hodnota.lower() in ("ano", "a", "yes", "y", "1", "true") else None)
+                s.vlastnost(typ, nazev, "isHidden", True if hodnota.lower() in ANO else None)
             else:
                 s.vlastnost(typ, nazev, VLASTNOST[akce], hodnota)
             pocet += 1
@@ -230,33 +269,39 @@ def proved(p: Projekt, navrh: list[dict], zapsat: bool) -> int:
         diff = list(difflib.unified_diff(s.puvodni, s.radky, s.cesta.name, s.cesta.name, n=1, lineterm=""))
         print("\n".join(diff[:80]) + ("\n…" if len(diff) > 80 else ""))
     for c in chyby:
-        print(f"PŘESKOČENO {c}")
+        print(L(f"PŘESKOČENO {c}", f"SKIPPED {c}"))
     if zapsat:
         for s in zmenene:
             s.uloz()
         kontrola = Projekt(p.report_dir)                                     # znovu načíst – nic se nesmí ztratit
         if (len(kontrola.tabulky), len(kontrola.sloupce), len(kontrola.miry)) != (len(p.tabulky), len(p.sloupce), len(p.miry)):
-            print("POZOR: po zápisu nesedí počty objektů – zkontroluj git diff!")
-        print(f"Zapsáno: {pocet} úprav v {len(zmenene)} souborech. Otevři projekt v Desktopu a spusť znovu audit.")
+            print(L("POZOR: po zápisu nesedí počty objektů – zkontroluj git diff!", "WARNING: object counts don't match after writing – check git diff!"))
+        print(L(f"Zapsáno: {pocet} úprav v {len(zmenene)} souborech. Otevři projekt v Desktopu a spusť znovu audit.",
+                f"Written: {pocet} changes in {len(zmenene)} files. Open the project in Desktop and re-run the audit."))
     else:
-        print(f"Náhled: {pocet} úprav v {len(zmenene)} souborech. Nic se nezapsalo – pro zápis přidej --zapsat.")
+        print(L(f"Náhled: {pocet} úprav v {len(zmenene)} souborech. Nic se nezapsalo – pro zápis přidej --zapsat.",
+                f"Preview: {pocet} changes in {len(zmenene)} files. Nothing was written – add --write to write."))
     return pocet
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("projekt")
-    ap.add_argument("navrh", nargs="?", help="CSV se schválenými úpravami")
-    ap.add_argument("--sablona", metavar="CSV", help="vygenerovat návrh z nálezů auditu")
-    ap.add_argument("--zapsat", action="store_true", help="opravdu zapsat (jinak jen náhled)")
+    from audit import _jazyk_z_argv
+    _jazyk_z_argv(sys.argv[1:])
+    ap = argparse.ArgumentParser(description=L(__doc__, POPIS_EN), formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("projekt", metavar=L("projekt", "project"))
+    ap.add_argument("navrh", nargs="?", metavar=L("navrh", "proposal"), help=L("CSV se schválenými úpravami", "CSV with the approved changes"))
+    ap.add_argument(*jazyk.volby("--sablona", "--template"), dest="sablona", metavar="CSV", help=L("vygenerovat návrh z nálezů auditu", "generate a proposal from the audit findings"))
+    ap.add_argument(*jazyk.volby("--zapsat", "--write"), dest="zapsat", action="store_true", help=L("opravdu zapsat (jinak jen náhled)", "really write (otherwise preview only)"))
+    ap.add_argument(*jazyk.volby("--jazyk", "--lang"), dest="lang", choices=["cs", "en"], help=L("jazyk výstupů (výchozí cs)", "output language (default cs)"))
     a = ap.parse_args()
+    jazyk.nastav(a.lang)
     p = Projekt(a.projekt)
     if a.sablona:
         sablona(p, Path(a.sablona))
     elif a.navrh:
         proved(p, nacti_navrh(Path(a.navrh)), a.zapsat)
     else:
-        ap.error("zadej návrh CSV, nebo --sablona soubor.csv")
+        ap.error(L("zadej návrh CSV, nebo --sablona soubor.csv", "give a proposal CSV, or --template file.csv"))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from jazyk import L
+
 
 # ---------------------------------------------------------------- objekty
 @dataclass
@@ -466,14 +468,16 @@ class Projekt:
             for a in _json(cesta).get("artifacts", []):
                 if "report" in a:
                     return (cesta.parent / a["report"]["path"]).resolve()
-            raise FileNotFoundError(f"{cesta.name} neodkazuje na žádný report.")
+            raise FileNotFoundError(L(f"{cesta.name} neodkazuje na žádný report.", f"{cesta.name} doesn't point to any report."))
         reporty = sorted(cesta.glob("*.Report"))
         if len(reporty) == 1:
             return reporty[0]
         if not reporty:
-            raise FileNotFoundError(f"V {cesta} není složka *.Report (projekt PBIP).")
-        raise ValueError(f"V {cesta} je {len(reporty)} reportů ({', '.join(r.name for r in reporty)}) – zadej .pbip nebo složku "
-                         f"*.Report, případně použij najdi_reporty() / audit.py --vse.")
+            raise FileNotFoundError(L(f"V {cesta} není složka *.Report (projekt PBIP).", f"There is no *.Report folder (PBIP project) in {cesta}."))
+        raise ValueError(L(f"V {cesta} je {len(reporty)} reportů ({', '.join(r.name for r in reporty)}) – zadej .pbip nebo složku "
+                           f"*.Report, případně použij najdi_reporty() / audit.py --vse.",
+                           f"{cesta} contains {len(reporty)} reports ({', '.join(r.name for r in reporty)}) – give a .pbip file or a "
+                           f"*.Report folder, or use najdi_reporty() / audit.py --all."))
 
     def _najdi_model(self) -> tuple[Path | None, str]:
         pbir = self.report_dir / "definition.pbir"
@@ -514,13 +518,16 @@ class Projekt:
             self.format_reportu = "PBIR-Legacy (report.json)"
             self.stranky, self.vizualy, self.zalozky, self.report_json = nacti_legacy_report(self.report_dir / "report.json")
         else:
-            raise FileNotFoundError(f"{self.report_dir.name}: nenalezen definition/pages ani report.json.")
+            raise FileNotFoundError(L(f"{self.report_dir.name}: nenalezen definition/pages ani report.json.",
+                                     f"{self.report_dir.name}: neither definition/pages nor report.json was found."))
 
     # --- model
     def _nacti_model(self):
         self.tabulky, self.sloupce, self.miry, self.vztahy, self.role = [], [], [], [], []
         if self.model_dir is None:
-            self.format_modelu = f"tenký report – model není v projektu ({self.model_pripojeni})" if self.model_pripojeni else "model nenalezen"
+            self.format_modelu = L(f"tenký report – model není v projektu ({self.model_pripojeni})",
+                                   f"thin report – the model is not in the project ({self.model_pripojeni})") if self.model_pripojeni \
+                else L("model nenalezen", "model not found")
             return
         tabulky = self.model_dir / "definition" / "tables"
         if tabulky.exists():
@@ -535,7 +542,7 @@ class Projekt:
             self.format_modelu = "TMSL (model.bim)"
             self.tabulky, self.sloupce, self.miry, self.vztahy, self.role = nacti_bim(self.model_dir / "model.bim")
         else:
-            self.format_modelu = "model bez definice (TMDL ani model.bim)"
+            self.format_modelu = L("model bez definice (TMDL ani model.bim)", "model without a definition (neither TMDL nor model.bim)")
 
     # --- pomůcky
     @property

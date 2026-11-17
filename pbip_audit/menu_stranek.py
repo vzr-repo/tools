@@ -16,6 +16,8 @@ import json
 import shutil
 from pathlib import Path
 
+import jazyk
+from jazyk import L as T
 from pbip import Projekt
 
 SV = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.13.0/schema.json"
@@ -78,20 +80,33 @@ def smaz(p: Projekt):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("projekt")
-    ap.add_argument("--skupiny")
-    ap.add_argument("--smazat", action="store_true")
+    import sys
+    from audit import _jazyk_z_argv
+    _jazyk_z_argv(sys.argv[1:])
+    ap = argparse.ArgumentParser(description=T(__doc__, "Slide-out page menu for any PBIR report: a \"☰ Pages\" button + a hidden panel "
+                                               "with the page list + 2 bookmarks per page (they keep slicer selections).\n\n"
+                                               "    python menu_stranek.py <project> --lang en\n"
+                                               "    python menu_stranek.py <project> --groups menu.json --lang en\n"
+                                               "    python menu_stranek.py <project> --remove\n\nmenu.json: see the Czech help "
+                                               "(keys skupiny / nazev / barva / stranky / bez_menu / kotva / pismo / akcent / podklad)."),
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("projekt", metavar=T("projekt", "project"))
+    ap.add_argument(*jazyk.volby("--skupiny", "--groups"), dest="skupiny", help=T("JSON se skupinami stránek a barvami", "JSON with page groups and colours"))
+    ap.add_argument(*jazyk.volby("--smazat", "--remove"), dest="smazat", action="store_true", help=T("odstranit menu", "remove the menu"))
+    ap.add_argument(*jazyk.volby("--jazyk", "--lang"), dest="lang", choices=["cs", "en"], help=T("jazyk (výchozí cs)", "language (default cs)"))
     a = ap.parse_args()
+    jazyk.nastav(a.lang)
     p = Projekt(a.projekt)
     if p.format_reportu != "PBIR":
-        raise SystemExit(f"Menu umí jen report ve formátu PBIR (tento je {p.format_reportu}). "
-                         "V Desktopu zapni Preview „Formát sestavy PBIR“ a projekt ulož znovu.")
+        raise SystemExit(T(f"Menu umí jen report ve formátu PBIR (tento je {p.format_reportu}). "
+                           "V Desktopu zapni Preview „Formát sestavy PBIR“ a projekt ulož znovu.",
+                           f"The menu only works with a PBIR report (this one is {p.format_reportu}). "
+                           "In Desktop turn on the \"PBIR report format\" preview and save the project again."))
     smaz(p)
     if a.smazat:
-        print("Menu odstraněno."); return
+        print(T("Menu odstraněno.", "Menu removed.")); return
     cfg = json.loads(Path(a.skupiny).read_text(encoding="utf-8")) if a.skupiny else {}
-    skupiny = cfg.get("skupiny") or [{"nazev": "Stránky", "barva": "#8C8476",
+    skupiny = cfg.get("skupiny") or [{"nazev": T("Stránky", "Pages"), "barva": "#8C8476",
                                        "stranky": [[s.nazev, s.zobrazeny] for s in p.stranky if not s.skryta]}]
     ink, akc, pod = cfg.get("pismo", "#22201C"), cfg.get("akcent", "#9C2F23"), cfg.get("podklad", "#FFFFFF")
     bez = set(cfg.get("bez_menu", []))
@@ -109,7 +124,7 @@ def main():
             bx, by, bh = st.sirka - 112, st.vyska - 34, 26
         ote, zav = f"menuOtevrit_{st.nazev}", f"menuZavrit_{st.nazev}"
         uloz(vis / "menuTlacitko" / "visual.json", vizual("menuTlacitko", bx, by, 96, bh, 9601,
-             tlacitko("☰  Stránky", {"type": L("'Bookmark'"), "bookmark": L(f"'{ote}'")}, akc, pod, velikost=9), skryty=False))
+             tlacitko(T("☰  Stránky", "☰  Pages"), {"type": L("'Bookmark'"), "bookmark": L(f"'{ote}'")}, akc, pod, velikost=9), skryty=False))
         rh, w = 22, 290
         radku = sum(1 + len(g["stranky"]) for g in skupiny)
         h = 44 + radku * rh + 8
@@ -121,7 +136,7 @@ def main():
 
         pridej("menuPozadi", vizual("menuPozadi", x, y, w, h, Z0, obdelnik(pod, ink)))
         pridej("menuNadpis", vizual("menuNadpis", x + 10, y + 8, w - 60, 28, Z0 + 1,
-                                    text([{"value": "Stránky reportu", "textStyle": {"fontSize": "13pt", "fontWeight": "bold", "color": ink}}])))
+                                    text([{"value": T("Stránky reportu", "Report pages"), "textStyle": {"fontSize": "13pt", "fontWeight": "bold", "color": ink}}])))
         pridej("menuZavrit", vizual("menuZavrit", x + w - 44, y + 8, 34, 26, Z0 + 1,
                                     tlacitko("✕", {"type": L("'Bookmark'"), "bookmark": L(f"'{zav}'")}, ink, pod, velikost=11, zarovnani="center")))
         yy = y + 44
@@ -139,7 +154,7 @@ def main():
                 yy += rh
         for nazev, rezim in ((ote, "visible"), (zav, "hidden")):
             uloz(p.report_def / "bookmarks" / f"{nazev}.bookmark.json", {
-                "$schema": SB, "displayName": ("Menu – otevřít " if rezim == "visible" else "Menu – zavřít ") + st.zobrazeny, "name": nazev,
+                "$schema": SB, "displayName": (T("Menu – otevřít ", "Menu – open ") if rezim == "visible" else T("Menu – zavřít ", "Menu – close ")) + st.zobrazeny, "name": nazev,
                 "options": {"targetVisualNames": prvky, "applyOnlyToTargetVisuals": True, "suppressData": True},
                 "explorationState": {"version": "1.3", "activeSection": st.nazev, "sections": {st.nazev: {"visualContainers": {
                     n: {"singleVisual": {"display": {"mode": "hidden"}} if rezim == "hidden" else {}} for n in prvky}}}}})
@@ -149,7 +164,7 @@ def main():
         "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmarksMetadata/1.0.0/schema.json", "items": []}
     d["items"] = d.get("items", []) + [{"name": z} for z in zalozky]
     uloz(meta, d)
-    print(f"Menu na {len(zalozky) // 2} stránkách ({len(zalozky)} záložek).")
+    print(T(f"Menu na {len(zalozky) // 2} stránkách ({len(zalozky)} záložek).", f"Menu on {len(zalozky) // 2} pages ({len(zalozky)} bookmarks)."))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+{
+  "_description": "Client settings for audit.py --settings (English keys; nastaveni_priklad.json is the same in Czech). Keys starting with _ are ignored.",
+  "_terms": "preferred name -> variants reported as M23 in table, measure and visible column names (whole-word match)",
+  "terms": {
+    "Cost Center": ["CostCenter", "CC", "Cost Centre"],
+    "Customer": ["Client", "Buyer"]
+  },
+  "_families": "groups of measure suffixes/prefixes that should exist together – M24",
+  "families": [
+    ["Actual", "Budget"],
+    ["Actual", "Forecast"]
+  ],
+  "_exceptions": "suppressed findings; {\"id\": …} from the CSV, or {\"code\": …, \"object\": pattern with * and ?}; reason is required",
+  "exceptions": [
+    {"code": "M21", "object": "*Currency*", "reason": "Currency code (ISO 4217) is a natural text key."}
+  ]
+}

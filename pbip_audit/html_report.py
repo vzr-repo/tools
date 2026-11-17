@@ -3,6 +3,7 @@ nálezy podle závažnosti a oblasti s doporučením, návrhy úprav DAX (před 
 
 Volá se z audit.py (`--html`). Slovní shrnutí pro vedení / klienta je jediná část, kterou Python neumí napsat
 smysluplně – na ni je v reportu místo: `--shrnuti shrnuti.md` (text od AI nebo vlastní), jinak se ukáže hotový prompt.
+Jazyk podle jazyk.py (--lang en).
 """
 from __future__ import annotations
 
@@ -11,27 +12,30 @@ import re
 from collections import Counter
 from datetime import date
 
-UROVNE = [("chyba", "Chyby", "critical", "✕"), ("varovani", "Varování", "warning", "!"), ("info", "Info", "info", "i")]
-OBLASTI = [("model", "Model"), ("dax", "Kvalita DAX"), ("rls", "Zabezpečení (RLS / OLS)"), ("ai", "Připravenost pro AI"),
-           ("report", "Report")]
-SKORE_POPIS = {"popisy měr": "Míry s popisem", "popisy viditelných sloupců": "Viditelné sloupce s popisem",
-               "popisy tabulek": "Tabulky s popisem", "skryté technické sloupce": "Skryté technické sloupce",
-               "srozumitelné názvy": "Srozumitelné názvy", "míry ve složkách": "Míry ve složkách",
-               "označený kalendář": "Označený kalendář"}
-SKORE_KROK = {  # složka skóre -> co udělat
-    "popisy měr": "Doplň popisy měr – `oprav.py --sablona`, popisy navrhni s AI nad `model_<název>.md` (ai_dokumentace.py).",
-    "popisy viditelných sloupců": "Popiš viditelné sloupce, nebo je skryj (M02, M05).",
-    "popisy tabulek": "Popiš tabulky: zrnitost (1 řádek = …) a zdroj (M03).",
-    "skryté technické sloupce": "Skryj klíče, kódy a řadicí sloupce (M06) – `oprav.py --sablona` je předvyplní.",
-    "srozumitelné názvy": "Přejmenuj technické a generické názvy (M09, M13) v Desktopu nebo Tabular Editoru.",
-    "míry ve složkách": "Rozděl míry do složek (M14) – sloupec „slozka“ v šabloně oprav.py.",
-    "označený kalendář": "Označ tabulku kalendáře (M12).",
-}
+import jazyk
+from jazyk import L, LDict, OBLAST, UROVEN_MN
 
-
-def tvar(n: int, jedna: str, dve: str, pet: str) -> str:
-    """Český tvar podle čísla: 1 tabulka, 2 tabulky, 5 tabulek."""
-    return f"{n} " + (jedna if n == 1 else dve if 2 <= n <= 4 else pet)
+UROVNE_KLICE = [("chyba", "critical", "✕"), ("varovani", "warning", "!"), ("info", "info", "i")]
+OBLASTI_KLICE = ["model", "dax", "rls", "ai", "report"]
+SKORE_POPIS = LDict({"popisy měr": ("Míry s popisem", "Measures with a description"),
+                     "popisy viditelných sloupců": ("Viditelné sloupce s popisem", "Visible columns with a description"),
+                     "popisy tabulek": ("Tabulky s popisem", "Tables with a description"),
+                     "skryté technické sloupce": ("Skryté technické sloupce", "Hidden technical columns"),
+                     "srozumitelné názvy": ("Srozumitelné názvy", "Readable names"), "míry ve složkách": ("Míry ve složkách", "Measures in folders"),
+                     "označený kalendář": ("Označený kalendář", "Marked date table")})
+SKORE_KROK = LDict({  # složka skóre -> co udělat
+    "popisy měr": ("Doplň popisy měr – `oprav.py --sablona`, popisy navrhni s AI nad `model_<název>.md` (ai_dokumentace.py).",
+                   "Add measure descriptions – `oprav.py --template`, draft them with AI over `model_<name>.md` (ai_dokumentace.py)."),
+    "popisy viditelných sloupců": ("Popiš viditelné sloupce, nebo je skryj (M02, M05).", "Describe visible columns, or hide them (M02, M05)."),
+    "popisy tabulek": ("Popiš tabulky: zrnitost (1 řádek = …) a zdroj (M03).", "Describe tables: grain (1 row = …) and source (M03)."),
+    "skryté technické sloupce": ("Skryj klíče, kódy a řadicí sloupce (M06) – `oprav.py --sablona` je předvyplní.",
+                                 "Hide keys, codes and sort columns (M06) – `oprav.py --template` pre-fills them."),
+    "srozumitelné názvy": ("Přejmenuj technické a generické názvy (M09, M13) v Desktopu nebo Tabular Editoru.",
+                           "Rename technical and generic names (M09, M13) in Desktop or Tabular Editor."),
+    "míry ve složkách": ("Rozděl míry do složek (M14) – sloupec „slozka“ v šabloně oprav.py.",
+                         "Group measures into folders (M14) – action \"folder\" in the oprav.py template."),
+    "označený kalendář": ("Označ tabulku kalendáře (M12).", "Mark the date table (M12)."),
+})
 
 
 def e(x) -> str:
@@ -65,36 +69,49 @@ def kroky(p, nalezy, sk, problemy, navrhy) -> list[tuple[str, str]]:
     chyby = Counter(n.kod for n in nalezy if n.uroven == "chyba")
     out = []
     if problemy:
-        out.append(("Ověř, že se model načetl správně", "Parser hlásí problém: " + "; ".join(problemy) +
-                    " Výsledky kontrol modelu nejsou spolehlivé, dokud se to nevyřeší."))
+        out.append((L("Ověř, že se model načetl správně", "Check that the model was loaded correctly"),
+                    L("Parser hlásí problém: ", "The parser reports a problem: ") + "; ".join(problemy) +
+                    L(" Výsledky kontrol modelu nejsou spolehlivé, dokud se to nevyřeší.", " Model check results are not reliable until this is resolved.")))
     if chyby:
-        out.append((f"Oprav chyby ({sum(chyby.values())})", "Rozbité věci, které se projeví uživatelům: " +
+        out.append((L(f"Oprav chyby ({sum(chyby.values())})", f"Fix the errors ({sum(chyby.values())})"),
+                    L("Rozbité věci, které se projeví uživatelům: ", "Broken things users will notice: ") +
                     ", ".join(f"{k} {NAZEV.get(k, '')} ({c}×)" for k, c in chyby.most_common()) + "."))
     model_var = Counter(n.kod for n in nalezy if n.uroven == "varovani" and n.oblast == "model")
     if model_var:
-        out.append((f"Oprav varování v modelu ({sum(model_var.values())})", ", ".join(
-            f"{k} {NAZEV.get(k, '')} ({c}×)" for k, c in model_var.most_common()) + " – zhoršují správnost čísel nebo výkon."))
+        out.append((L(f"Oprav varování v modelu ({sum(model_var.values())})", f"Fix the model warnings ({sum(model_var.values())})"), ", ".join(
+            f"{k} {NAZEV.get(k, '')} ({c}×)" for k, c in model_var.most_common())
+            + L(" – zhoršují správnost čísel nebo výkon.", " – they hurt the correctness of numbers or performance.")))
     if pocty.get("S02"):
-        out.append(("Uzavři díry v RLS", f"{pocty['S02']}× se filtr role nedostane k tabulce s daty – uživatelé role ji vidí celou. "
-                    "Filtruj dimenzi s aktivním vztahem 1:N k faktu, nebo tabulku skryj přes OLS."))
+        out.append((L("Uzavři díry v RLS", "Close the gaps in RLS"),
+                    L(f"{pocty['S02']}× se filtr role nedostane k tabulce s daty – uživatelé role ji vidí celou. "
+                      "Filtruj dimenzi s aktivním vztahem 1:N k faktu, nebo tabulku skryj přes OLS.",
+                      f"{pocty['S02']}× a role filter doesn't reach a data table – users of the role see all of it. "
+                      "Filter a dimension with an active 1:N relationship to the fact, or hide the table with OLS.")))
     presne = [x for x in navrhy if x["presny"]]
     overit = [x for x in navrhy if x["vse"]]
     if presne:
-        out.append((f"Zjednoduš DAX bez změny výsledku ({len(presne)} měr)",
-                    "Přesné přepisy (DIVIDE, SUM místo SUMX, SWITCH, VAR …) – `oprav.py --sablona` je předvyplní, "
-                    "po náhledu zapiš `--zapsat`."))
+        out.append((L(f"Zjednoduš DAX bez změny výsledku ({len(presne)} měr)", f"Simplify DAX without changing results ({len(presne)} measures)"),
+                    L("Přesné přepisy (DIVIDE, SUM místo SUMX, SWITCH, VAR …) – `oprav.py --sablona` je předvyplní, "
+                      "po náhledu zapiš `--zapsat`.",
+                      "Exact rewrites (DIVIDE, SUM instead of SUMX, SWITCH, VAR …) – `oprav.py --template` pre-fills them, "
+                      "write them with `--write` after the preview.")))
     if overit:
-        out.append((f"Prověř DAX, který se počítá jinak, než vypadá ({len(overit)} měr)",
-                    "Návrhy k ověření (filtry přes celou tabulku, časové funkce nad datem z faktu …) mění výsledek – "
-                    "porovnej čísla v Desktopu, než je převezmeš."))
+        out.append((L(f"Prověř DAX, který se počítá jinak, než vypadá ({len(overit)} měr)",
+                      f"Review DAX that calculates differently than it looks ({len(overit)} measures)"),
+                    L("Návrhy k ověření (filtry přes celou tabulku, časové funkce nad datem z faktu …) mění výsledek – "
+                      "porovnej čísla v Desktopu, než je převezmeš.",
+                      "Rewrites to verify (filters over a whole table, time intelligence on a fact date …) change the result – "
+                      "compare the numbers in Desktop before you take them.")))
     slabe = sorted(((v, k) for k, v in sk.items() if k != "skore" and v < 80), key=lambda x: x[0])
     for v, k in slabe[:4]:
-        out.append((f"Zvedni skóre AI: {SKORE_POPIS.get(k, k).lower()} ({v} %)", SKORE_KROK.get(k, "")))
+        out.append((L(f"Zvedni skóre AI: {SKORE_POPIS.get(k, k).cs.lower()} ({v} %)", f"Raise the AI score: {SKORE_POPIS.get(k, k).en.lower()} ({v} %)"),
+                    SKORE_KROK.get(k, "")))
     rep = [k for k in ("R11", "R14", "R05", "R04", "R01", "R10") if pocty.get(k)]
     if rep:
-        out.append(("Dotáhni report", "; ".join(f"{k} {NAZEV.get(k, '')} ({pocty[k]}×)" for k in rep) + "."))
-    out.append(("Spusť audit znovu a porovnej", "`audit.py … --baseline audit_<název>.csv` ukáže nové a vyřešené nálezy, "
-                "`porovnej.py` před/po po složkách skóre."))
+        out.append((L("Dotáhni report", "Polish the report"), "; ".join(f"{k} {NAZEV.get(k, '')} ({pocty[k]}×)" for k in rep) + "."))
+    out.append((L("Spusť audit znovu a porovnej", "Re-run the audit and compare"),
+                L("`audit.py … --baseline audit_<název>.csv` ukáže nové a vyřešené nálezy, `porovnej.py` před/po po složkách skóre.",
+                  "`audit.py … --baseline audit_<name>.csv` shows new and resolved findings, `porovnej.py` before/after per score component.")))
     return out
 
 
@@ -172,47 +189,59 @@ document.querySelectorAll('[data-open]').forEach(a=>a.addEventListener('click',(
 
 def html_report(p, nalezy, sk, problemy, potlacene, navrhy, zmeny=None, shrnuti: str = "") -> str:
     from kontroly import NADPISY
-    NAZEV.clear(); NAZEV.update(NADPISY)
+    NAZEV.clear(); NAZEV.update({k: NADPISY[k] for k in NADPISY})
+    UROVNE = [(u, UROVEN_MN[u], cls, ikona) for u, cls, ikona in UROVNE_KLICE]
+    OBLASTI = [(o, OBLAST[o]) for o in OBLASTI_KLICE]
+    t = jazyk.tvar
     pocty = Counter(n.uroven for n in nalezy)
     podle_oblasti = {o: Counter(n.uroven for n in nalezy if n.oblast == o) for o, _ in OBLASTI}
-    h = [f"<!DOCTYPE html><html lang='cs'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    datum = f"{date.today():%Y-%m-%d}" if jazyk.en() else f"{date.today():%d. %m. %Y}"
+    h = [f"<!DOCTYPE html><html lang='{jazyk.aktualni()}'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
          f"<title>Audit {e(p.nazev)}</title><style>{CSS}</style></head><body><div class='viz-root'><div class='wrap'>"]
-    h.append(f"<header><div class='tag'>Audit Power BI projektu</div><h1>{e(p.nazev)}</h1>"
-             f"<div class='sec'>{date.today():%d. %m. %Y} · report {e(p.format_reportu)} · model {e(p.format_modelu)}</div></header>")
+    h.append(f"<header><div class='tag'>{L('Audit Power BI projektu', 'Power BI project audit')}</div><h1>{e(p.nazev)}</h1>"
+             f"<div class='sec'>{datum} · report {e(p.format_reportu)} · model {e(p.format_modelu)}</div></header>")
     if problemy:
-        h.append("<div class='card' style='border-color:var(--critical);margin-top:18px'><h3>⚠️ Model se nenačetl správně</h3>"
-                 + "".join(f"<div class='sec'>{e(x)}</div>" for x in problemy) + "<div class='muted'>Výsledky kontrol modelu nejsou spolehlivé.</div></div>")
+        h.append(f"<div class='card' style='border-color:var(--critical);margin-top:18px'><h3>⚠️ {L('Model se nenačetl správně', 'The model was not loaded correctly')}</h3>"
+                 + "".join(f"<div class='sec'>{e(x)}</div>" for x in problemy)
+                 + f"<div class='muted'>{L('Výsledky kontrol modelu nejsou spolehlivé.', 'Model check results are not reliable.')}</div></div>")
 
     # --- metriky
     skore = sk["skore"]
-    hodnoceni = "dobrý základ" if skore >= 80 else "potřebuje doplnit" if skore >= 50 else "pro AI zatím nepřipravený"
-    h.append("<h2>Stav v číslech</h2><div class='grid g4'>")
-    h.append(f"<div class='card kpi hero'><div class='lbl'>Připravenost pro AI</div><div class='val'>{skore}<span class='muted' style='font-size:20px'> / 100</span></div>"
-             f"<div class='meter' role='img' aria-label='Skóre {skore} ze 100'><span style='width:{skore}%'></span></div><div class='sub'>{hodnoceni}</div></div>")
+    hodnoceni = L("dobrý základ", "a good foundation") if skore >= 80 else L("potřebuje doplnit", "needs work") if skore >= 50 \
+        else L("pro AI zatím nepřipravený", "not ready for AI yet")
+    h.append(f"<h2>{L('Stav v číslech', 'Status in numbers')}</h2><div class='grid g4'>")
+    h.append(f"<div class='card kpi hero'><div class='lbl'>{L('Připravenost pro AI', 'AI readiness')}</div><div class='val'>{skore}<span class='muted' style='font-size:20px'> / 100</span></div>"
+             f"<div class='meter' role='img' aria-label='{L(f'Skóre {skore} ze 100', f'Score {skore} of 100')}'><span style='width:{skore}%'></span></div><div class='sub'>{hodnoceni}</div></div>")
+    popis_urovne = {"chyba": L("rozbité – projeví se uživatelům", "broken – users will notice"),
+                    "varovani": L("zhoršuje použitelnost nebo výkon", "hurts usability or performance"), "info": L("ke zvážení", "worth considering")}
     for u, nazev, cls, ikona in UROVNE:
         h.append(f"<div class='card kpi'><div class='lbl'><span class='dot d-{cls}' aria-hidden='true'>{ikona}</span> {nazev}</div>"
-                 f"<div class='val'>{pocty[u]}</div><div class='sub'>"
-                 + {"chyba": "rozbité – projeví se uživatelům", "varovani": "zhoršuje použitelnost nebo výkon", "info": "ke zvážení"}[u]
-                 + "</div></div>")
+                 f"<div class='val'>{pocty[u]}</div><div class='sub'>" + popis_urovne[u] + "</div></div>")
     h.append("</div><div class='grid g4' style='margin-top:14px'>")
-    for lbl, val, sub in (("Model", tvar(len(p.tabulky), "tabulka", "tabulky", "tabulek"),
-                           " · ".join((tvar(len(p.sloupce), "sloupec", "sloupce", "sloupců"), tvar(len(p.miry), "míra", "míry", "měr"),
-                                       tvar(len(p.vztahy), "vztah", "vztahy", "vztahů")))),
-                          ("Report", tvar(len(p.stranky), "stránka", "stránky", "stránek"),
-                           tvar(len(p.vizualy), "vizuál", "vizuály", "vizuálů") + " · " + tvar(len(p.zalozky), "záložka", "záložky", "záložek")),
-                          ("Zabezpečení", tvar(len(p.role), "role", "role", "rolí"), "RLS / OLS" if p.role else "model nemá role"),
-                          ("DAX", tvar(len(navrhy), "míra k úpravě", "míry k úpravě", "měr k úpravě"),
-                           f"{sum(1 for x in navrhy if x['presny'])} přesně · {sum(1 for x in navrhy if x['vse'])} k ověření")):
+    for lbl, val, sub in (("Model", t(len(p.tabulky), "tabulka", "tabulky", "tabulek", "table", "tables"),
+                           " · ".join((t(len(p.sloupce), "sloupec", "sloupce", "sloupců", "column", "columns"),
+                                       t(len(p.miry), "míra", "míry", "měr", "measure", "measures"),
+                                       t(len(p.vztahy), "vztah", "vztahy", "vztahů", "relationship", "relationships")))),
+                          ("Report", t(len(p.stranky), "stránka", "stránky", "stránek", "page", "pages"),
+                           t(len(p.vizualy), "vizuál", "vizuály", "vizuálů", "visual", "visuals") + " · "
+                           + t(len(p.zalozky), "záložka", "záložky", "záložek", "bookmark", "bookmarks")),
+                          (L("Zabezpečení", "Security"), t(len(p.role), "role", "role", "rolí", "role", "roles"),
+                           "RLS / OLS" if p.role else L("model nemá role", "the model has no roles")),
+                          ("DAX", t(len(navrhy), "míra k úpravě", "míry k úpravě", "měr k úpravě", "measure to change", "measures to change"),
+                           L(f"{sum(1 for x in navrhy if x['presny'])} přesně · {sum(1 for x in navrhy if x['vse'])} k ověření",
+                             f"{sum(1 for x in navrhy if x['presny'])} exact · {sum(1 for x in navrhy if x['vse'])} to verify"))):
         h.append(f"<div class='card kpi'><div class='lbl'>{lbl}</div><div class='val' style='font-size:24px'>{e(val)}</div><div class='sub'>{e(sub)}</div></div>")
     h.append("</div>")
     if potlacene or zmeny:
-        h.append("<p class='muted'>" + (f"{potlacene} nálezů potlačeno výjimkou klienta. " if potlacene else "")
-                 + (f"Proti baseline: {zmeny[0]} nových chyb a varování, {zmeny[1]} vyřešených nálezů." if zmeny else "") + "</p>")
+        h.append("<p class='muted'>" + (L(f"{potlacene} nálezů potlačeno výjimkou klienta. ", f"{potlacene} findings suppressed by a client exception. ")
+                                         if potlacene else "")
+                 + (L(f"Proti baseline: {zmeny[0]} nových chyb a varování, {zmeny[1]} vyřešených nálezů.",
+                      f"Against the baseline: {zmeny[0]} new errors and warnings, {zmeny[1]} resolved findings.") if zmeny else "") + "</p>")
 
     # --- oblasti × závažnost + složky skóre
     mx = max([sum(c.values()) for c in podle_oblasti.values()] + [1])
-    h.append("<div class='grid g2' style='margin-top:14px'><div class='card'><h3>Nálezy podle oblasti</h3><div class='muted' style='font-size:13px;margin-bottom:12px'>"
-             "počet nálezů, rozdělený podle závažnosti</div><div class='bars'>")
+    h.append(f"<div class='grid g2' style='margin-top:14px'><div class='card'><h3>{L('Nálezy podle oblasti', 'Findings by area')}</h3>"
+             f"<div class='muted' style='font-size:13px;margin-bottom:12px'>{L('počet nálezů, rozdělený podle závažnosti', 'number of findings, split by severity')}</div><div class='bars'>")
     for o, nazev in OBLASTI:
         c = podle_oblasti[o]
         celk = sum(c.values())
@@ -221,7 +250,8 @@ def html_report(p, nalezy, sk, problemy, potlacene, navrhy, zmeny=None, shrnuti:
         h.append(f"<div class='barrow'><span class='name'>{e(nazev)}</span><div class='track'>{segs}</div><span class='num'>{celk}</span></div>")
     h.append("</div><div class='legend'>" + "".join(f"<span><i class='sw' style='background:var(--{cls})'></i>{lbl}</span>" for _, lbl, cls, _ in UROVNE)
              + "</div></div>")
-    h.append("<div class='card'><h3>Skóre AI po složkách</h3><div class='muted' style='font-size:13px;margin-bottom:12px'>% splnění · váha ve skóre</div><div class='bars'>")
+    h.append(f"<div class='card'><h3>{L('Skóre AI po složkách', 'AI score by component')}</h3><div class='muted' style='font-size:13px;margin-bottom:12px'>"
+             f"{L('% splnění · váha ve skóre', '% met · weight in the score')}</div><div class='bars'>")
     from audit import VAHY_AI
     for k in VAHY_AI:
         h.append(f"<div class='barrow'><span class='name'>{e(SKORE_POPIS.get(k, k))}</span><div class='sbar' title='{sk[k]} %'><span style='width:{sk[k]}%'></span></div>"
@@ -229,31 +259,38 @@ def html_report(p, nalezy, sk, problemy, potlacene, navrhy, zmeny=None, shrnuti:
     h.append("</div></div></div>")
 
     # --- shrnutí (LLM / vlastní text)
-    h.append("<h2>Shrnutí</h2>")
+    h.append(f"<h2>{L('Shrnutí', 'Summary')}</h2>")
     if shrnuti.strip():
         h.append(f"<div class='card'>{_md(shrnuti)}</div>")
     else:
-        h.append("<div class='ai-box'><div class='tag'>Doplní AI nebo auditor</div><p class='sec' style='margin:6px 0'>Slovní shrnutí pro klienta "
-                 "(co čísla znamenají pro jeho reporting a priority) Python nenapíše smysluplně. Dej AI soubory "
-                 f"<code>audit_{e(p.nazev)}.md</code> a <code>model_{e(p.nazev)}.md</code> s tímto zadáním a výsledek ulož jako "
-                 f"<code>shrnuti.md</code>; pak spusť audit s <code>--html --shrnuti shrnuti.md</code>:</p>"
-                 "<pre>Napiš shrnutí auditu Power BI modelu pro vedoucího týmu (5–8 vět + 3 odrážky priorit). Vycházej jen z přiložených "
-                 "souborů, nevymýšlej čísla. Vysvětli dopad chyb a varování na uživatele reportu a na Copilot, doporuč pořadí kroků.</pre></div>")
+        h.append(L("<div class='ai-box'><div class='tag'>Doplní AI nebo auditor</div><p class='sec' style='margin:6px 0'>Slovní shrnutí pro klienta "
+                   "(co čísla znamenají pro jeho reporting a priority) Python nenapíše smysluplně. Dej AI soubory "
+                   f"<code>audit_{e(p.nazev)}.md</code> a <code>model_{e(p.nazev)}.md</code> s tímto zadáním a výsledek ulož jako "
+                   f"<code>shrnuti.md</code>; pak spusť audit s <code>--html --shrnuti shrnuti.md</code>:</p>"
+                   "<pre>Napiš shrnutí auditu Power BI modelu pro vedoucího týmu (5–8 vět + 3 odrážky priorit). Vycházej jen z přiložených "
+                   "souborů, nevymýšlej čísla. Vysvětli dopad chyb a varování na uživatele reportu a na Copilot, doporuč pořadí kroků.</pre></div>",
+                   "<div class='ai-box'><div class='tag'>To be added by AI or the auditor</div><p class='sec' style='margin:6px 0'>A narrative summary "
+                   "for the client (what the numbers mean for their reporting and priorities) is something Python can't write meaningfully. Give an AI "
+                   f"<code>audit_{e(p.nazev)}.md</code> and <code>model_{e(p.nazev)}.md</code> with this prompt and save the result as "
+                   f"<code>summary.md</code>; then run the audit with <code>--html --summary summary.md</code>:</p>"
+                   "<pre>Write a summary of this Power BI model audit for a team lead (5–8 sentences + 3 priority bullets). Use only the attached "
+                   "files, don't make up numbers. Explain the impact of the errors and warnings on report users and on Copilot, and recommend "
+                   "the order of the next steps.</pre></div>"))
 
     # --- jak pokračovat
-    h.append("<h2>Jak pokračovat</h2><div class='card'><ol class='steps'>")
+    h.append(f"<h2>{L('Jak pokračovat', 'Next steps')}</h2><div class='card'><ol class='steps'>")
     for nadpis, detail in kroky(p, nalezy, sk, problemy, navrhy):
         h.append(f"<li><h3>{_inline(nadpis)}</h3><div class='sec'>{_inline(detail)}</div></li>")
     h.append("</ol></div>")
 
     # --- nálezy
-    h.append(f"<h2 id='nalezy'>Nálezy ({len(nalezy)})</h2><div class='filters' role='group' aria-label='Filtr nálezů'>")
+    h.append(f"<h2 id='nalezy'>{L('Nálezy', 'Findings')} ({len(nalezy)})</h2><div class='filters' role='group' aria-label='{L('Filtr nálezů', 'Filter findings')}'>")
     for u, lbl, cls, ikona in UROVNE:
         h.append(f"<button class='chip' data-k='u' data-v='{u}' aria-pressed='false'><span class='dot d-{cls}' aria-hidden='true'>{ikona}</span> {lbl} {pocty[u]}</button>")
     for o, nazev in OBLASTI:
         if sum(podle_oblasti[o].values()):
             h.append(f"<button class='chip' data-k='o' data-v='{o}' aria-pressed='false'>{e(nazev)}</button>")
-    h.append("<input type='search' id='q' placeholder='Hledat objekt nebo text…' aria-label='Hledat'></div>")
+    h.append(f"<input type='search' id='q' placeholder='{L('Hledat objekt nebo text…', 'Search for an object or text…')}' aria-label='{L('Hledat', 'Search')}'></div>")
     dax_podle = {x["objekt"]: x for x in navrhy}
     for u, lbl, cls, ikona in UROVNE:
         nn = [n for n in nalezy if n.uroven == u]
@@ -267,32 +304,35 @@ def html_report(p, nalezy, sk, problemy, potlacene, navrhy, zmeny=None, shrnuti:
                 h.append(f"<details class='grp' id='{gid}' data-u='{u}' data-o='{o}'><summary><span class='dot d-{cls}' aria-hidden='true'>{ikona}</span>"
                          f"<span class='t'>{kod} · {e(NAZEV.get(kod, sk_n[0].popis))}</span><span class='badge'>{e(onazev)}</span>"
                          f"<span class='c'>{len(sk_n)}×</span></summary><div class='body'>"
-                         f"<div class='rec'><strong>Doporučení:</strong> {_inline(sk_n[0].doporuceni)}</div><ul class='items'>")
+                         f"<div class='rec'><strong>{L('Doporučení:', 'Recommendation:')}</strong> {_inline(sk_n[0].doporuceni)}</div><ul class='items'>")
                 for n in sk_n[:100]:
                     h.append(f"<li><code>{e(n.objekt)}</code> – {e(n.popis)}</li>")
                 if len(sk_n) > 100:
-                    h.append(f"<li class='muted'>… a dalších {len(sk_n) - 100} v CSV</li>")
+                    h.append(f"<li class='muted'>{L(f'… a dalších {len(sk_n) - 100} v CSV', f'… and {len(sk_n) - 100} more in the CSV')}</li>")
                 h.append("</ul>")
                 if o == "dax":
                     for n in sk_n[:30]:
                         x = dax_podle.get(n.objekt)
                         if n.navrh and x:
-                            h.append(f"<div style='margin-top:10px'><div class='tag'>{e(n.objekt)} · {'přesná úprava' if n.presny else 'k ověření'}</div>"
-                                     f"<div class='pair'><div><div class='muted' style='font-size:12px'>Před</div><pre>{e(x['puvodni'])}</pre></div>"
-                                     f"<div><div class='muted' style='font-size:12px'>Po</div><pre>{e(n.navrh)}</pre></div></div></div>")
+                            h.append(f"<div style='margin-top:10px'><div class='tag'>{e(n.objekt)} · "
+                                     f"{L('přesná úprava', 'exact rewrite') if n.presny else L('k ověření', 'to verify')}</div>"
+                                     f"<div class='pair'><div><div class='muted' style='font-size:12px'>{L('Před', 'Before')}</div><pre>{e(x['puvodni'])}</pre></div>"
+                                     f"<div><div class='muted' style='font-size:12px'>{L('Po', 'After')}</div><pre>{e(n.navrh)}</pre></div></div></div>")
                 h.append("</div></details>")
         h.append("</section>")
     if not nalezy:
-        h.append("<div class='card'>Bez nálezů.</div>")
+        h.append(f"<div class='card'>{L('Bez nálezů.', 'No findings.')}</div>")
 
     # --- tabulka pro přístupnost / tisk
-    h.append("<h2>Přehled v tabulce</h2><div class='card' style='overflow:auto'><table class='t'><thead><tr><th>Oblast</th>"
-             + "".join(f"<th class='num'>{lbl}</th>" for _, lbl, _, _ in UROVNE) + "<th class='num'>Celkem</th></tr></thead><tbody>")
+    h.append(f"<h2>{L('Přehled v tabulce', 'Overview table')}</h2><div class='card' style='overflow:auto'><table class='t'><thead><tr><th>{L('Oblast', 'Area')}</th>"
+             + "".join(f"<th class='num'>{lbl}</th>" for _, lbl, _, _ in UROVNE) + f"<th class='num'>{L('Celkem', 'Total')}</th></tr></thead><tbody>")
     for o, nazev in OBLASTI:
         c = podle_oblasti[o]
         h.append(f"<tr><td>{e(nazev)}</td>" + "".join(f"<td class='num'>{c[u]}</td>" for u, _, _, _ in UROVNE) + f"<td class='num'>{sum(c.values())}</td></tr>")
     h.append("</tbody></table></div>")
-    h.append(f"<footer>Vygenerováno nástrojem <a href='https://github.com/vzr-repo/tools' style='color:inherit'>pbip_audit</a> · statická kontrola "
-             "souborů projektu – nezná data ani uživatele, čísla ověřuj v Power BI Desktopu.</footer>")
+    h.append(L("<footer>Vygenerováno nástrojem <a href='https://github.com/vzr-repo/tools' style='color:inherit'>pbip_audit</a> · statická kontrola "
+               "souborů projektu – nezná data ani uživatele, čísla ověřuj v Power BI Desktopu.</footer>",
+               "<footer>Generated by <a href='https://github.com/vzr-repo/tools' style='color:inherit'>pbip_audit</a> · a static check of the "
+               "project files – it knows neither the data nor the users, verify numbers in Power BI Desktop.</footer>"))
     h.append(f"</div></div><script>{JS}</script></body></html>")
     return "".join(h)

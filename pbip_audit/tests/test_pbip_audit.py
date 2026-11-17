@@ -1,6 +1,7 @@
 """Testy nástrojů pbip_audit na malých syntetických projektech PBIP (vytvoří se v tmp_path):
 PBIR + TMDL s nastraženými chybami, starý report.json + model.bim, tenký report a dva reporty nad jedním modelem."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -678,3 +679,69 @@ def test_html_report(tmp_path, monkeypatch):
     assert "Jak pokračovat" in h and "Kvalita DAX" in h and "<strong>malý</strong>" in h and "<li>první priorita</li>" in h
     assert "KEEPFILTERS ( Prodej[Kč] &gt; 1000 )" in h and "1 tabulka" in h
     assert (tmp_path / "out" / "dax_D.md").exists()
+
+
+# ------------------------------------------------------------------ angličtina (--lang en)
+CESKA_SLOVA = re.compile(r"Doporučení|Souhrn|Nálezy|nemá popis|Míra|Tabulka|chyb |varování|Připravenost|Původní|Přesná|Zabezpečení|"
+                         r"Jak pokračovat|Stav v číslech|Před|objekt;typ|ověřit")
+
+
+@pytest.fixture
+def anglicky():
+    import jazyk
+    jazyk.nastav("en")
+    yield
+    jazyk.nastav("cs")
+
+
+def test_anglicke_vystupy(tmp_path, monkeypatch):
+    import audit
+    rep = dax_projekt(tmp_path / "p")
+    try:
+        monkeypatch.setattr(sys, "argv", ["audit.py", str(rep), "--output", str(tmp_path / "out"), "--html", "--lang", "en"])
+        with pytest.raises(SystemExit):
+            audit.main()
+    finally:
+        import jazyk
+        jazyk.nastav("cs")
+    for soubor in ("audit_D.md", "audit_D.csv", "audit_D.html", "dax_D.md"):
+        text = (tmp_path / "out" / soubor).read_text(encoding="utf-8-sig")
+        assert not CESKA_SLOVA.search(text), (soubor, CESKA_SLOVA.search(text).group(0))
+    md = (tmp_path / "out" / "audit_D.md").read_text(encoding="utf-8")
+    assert "## Summary" in md and "## DAX quality" in md and "Recommendation:" in md
+    assert (tmp_path / "out" / "audit_D.csv").read_text(encoding="utf-8-sig").startswith("code;level;area;object;description")
+    assert "<html lang='en'>" in (tmp_path / "out" / "audit_D.html").read_text(encoding="utf-8") and "Next steps" in \
+        (tmp_path / "out" / "audit_D.html").read_text(encoding="utf-8")
+
+
+def test_id_stejne_v_obou_jazycich(tmp_path, anglicky):
+    import jazyk
+    p = Projekt(model_projekt(tmp_path, ROLE))
+    en = sorted(n.id for n in spust(p))
+    jazyk.nastav("cs")
+    cs = sorted(n.id for n in spust(Projekt(model_projekt(tmp_path / "b", ROLE))))
+    assert en == cs and len(en) > 20
+
+
+def test_oprav_anglicka_sablona_a_nastaveni(tmp_path, anglicky):
+    import csv
+    from audit import je_vyjimka, nacti_nastaveni
+    from oprav import nacti_navrh, proved, sablona
+    rep = dax_projekt(tmp_path)
+    p = Projekt(rep)
+    navrh = tmp_path / "fixes.csv"
+    sablona(p, navrh)
+    with open(navrh, encoding="utf-8-sig") as f:
+        radky = list(csv.DictReader(f, delimiter=";"))
+    assert list(radky[0]) == ["object", "type", "action", "value", "finding", "context"]
+    assert {r["action"] for r in radky} >= {"description", "dax"} and {r["type"] for r in radky} <= {"table", "column", "measure"}
+    proved(p, nacti_navrh(navrh), zapsat=True)                                    # anglická šablona se načte a zapíše
+    assert next(m for m in Projekt(rep).miry if m.nazev == "Celkem").dax == "[Tržby]"
+    zapis(tmp_path / "client.json", {"terms": {"Revenue": ["Rev"]}, "exceptions": [{"code": "D08", "object": "Prodej*", "reason": "known"}]})
+    nast = nacti_nastaveni(tmp_path / "client.json")
+    assert nast["terminy"] == {"Revenue": ["Rev"]} and nast["vyjimky"][0] == {"kod": "D08", "objekt": "Prodej*", "duvod": "known"}
+    d08 = next(n for n in spust(p) if n.kod == "D08")
+    assert je_vyjimka(d08, nast["vyjimky"])
+    zapis(tmp_path / "bad.json", {"exceptions": [{"code": "D08"}]})
+    with pytest.raises(ValueError, match="reason"):
+        nacti_nastaveni(tmp_path / "bad.json")

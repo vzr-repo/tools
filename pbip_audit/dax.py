@@ -14,6 +14,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from jazyk import L
+
 ITERATORY = {"SUMX", "AVERAGEX", "MINX", "MAXX", "COUNTX", "COUNTAX", "PRODUCTX", "CONCATENATEX", "RANKX", "FILTER",
              "ADDCOLUMNS", "SELECTCOLUMNS", "SUMMARIZE", "SUMMARIZECOLUMNS", "GENERATE", "GENERATEALL", "TOPN",
              "MAXX", "MEDIANX", "PERCENTILEX.INC", "PERCENTILEX.EXC", "STDEVX.P", "STDEVX.S", "VARX.P", "VARX.S",
@@ -234,13 +236,14 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
     for v in vv:
         # D05 CALCULATE([Míra]) bez filtrů
         if v.nazev == "CALCULATE" and len(v.argumenty) == 1 and holy_odkaz(v.argumenty[0]) in miry:
-            out.append(Navrh("D05", True, "CALCULATE bez filtrů kolem míry nic nedělá (odkaz na míru už CALCULATE obsahuje).",
+            out.append(Navrh("D05", True, L("CALCULATE bez filtrů kolem míry nic nedělá (odkaz na míru už CALCULATE obsahuje).",
+                               "CALCULATE without filters around a measure does nothing (a measure reference already implies CALCULATE)."),
                              _nahrad(dax, v.zacatek, v.konec, v.argumenty[0].strip())))
         # D03 SUMX(T, T[c]) -> SUM(T[c])
         if v.nazev in AGREGACE_X and len(v.argumenty) == 2:
             t, sl = tabulka_odkaz(v.argumenty[0]), sloupec_odkaz(v.argumenty[1])
             if t and sl and sl[0] == t:
-                out.append(Navrh("D03", True, f"{v.nazev} přes jediný sloupec je {AGREGACE_X[v.nazev]}.",
+                out.append(Navrh("D03", True, L(f"{v.nazev} přes jediný sloupec je {AGREGACE_X[v.nazev]}.", f"{v.nazev} over a single column is {AGREGACE_X[v.nazev]}."),
                                  _nahrad(dax, v.zacatek, v.konec, f"{AGREGACE_X[v.nazev]} ( {v.argumenty[1].strip()} )")))
         # D01 FILTER jako filtr v CALCULATE
         if v.nazev in ("CALCULATE", "CALCULATETABLE"):
@@ -252,14 +255,17 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
                 t = tabulka_odkaz(zdroj)
                 vse = jedine_volani(zdroj, "ALL") or jedine_volani(zdroj, "VALUES")
                 if t and _jednoducha_podminka(cond, t, miry):
-                    out.append(Navrh("D01", False, f"FILTER přes celou tabulku {t} jako filtr CALCULATE – stačí podmínka na sloupci "
-                                     "(KEEPFILTERS zachová stávající filtry jako FILTER).",
+                    out.append(Navrh("D01", False, L(f"FILTER přes celou tabulku {t} jako filtr CALCULATE – stačí podmínka na sloupci "
+                                       "(KEEPFILTERS zachová stávající filtry jako FILTER).",
+                                       f"FILTER over the whole table {t} as a CALCULATE filter – a column predicate is enough "
+                                       "(KEEPFILTERS keeps existing filters like FILTER does)."),
                                      _nahrad(dax, a, b, f"KEEPFILTERS ( {cond.strip()} )")))
                 elif vse and vse.nazev == "ALL" and len(vse.argumenty) == 1 and sloupec_odkaz(vse.argumenty[0]):
                     sl = sloupec_odkaz(vse.argumenty[0])
                     s, h = odkazy(cond)
                     if not h and s and all(x == sl for x in s) and not volani(cond, MENI_KONTEXT):
-                        out.append(Navrh("D01", True, "FILTER ( ALL ( sloupec ), podmínka ) je totéž co samotná podmínka.",
+                        out.append(Navrh("D01", True, L("FILTER ( ALL ( sloupec ), podmínka ) je totéž co samotná podmínka.",
+                                           "FILTER ( ALL ( column ), condition ) is the same as the condition alone."),
                                          _nahrad(dax, a, b, cond.strip())))
         # D04 COUNTROWS(FILTER(T, podmínka))
         if v.nazev == "COUNTROWS" and len(v.argumenty) == 1:
@@ -268,7 +274,8 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
                 t = tabulka_odkaz(f.argumenty[0])
                 if t and _jednoducha_podminka(f.argumenty[1], t, miry):
                     zdroj = f.argumenty[0].strip()
-                    out.append(Navrh("D04", False, f"COUNTROWS ( FILTER ( {zdroj}, … ) ) iteruje celou tabulku – rychlejší je CALCULATE s filtrem.",
+                    out.append(Navrh("D04", False, L(f"COUNTROWS ( FILTER ( {zdroj}, … ) ) iteruje celou tabulku – rychlejší je CALCULATE s filtrem.",
+                                       f"COUNTROWS ( FILTER ( {zdroj}, … ) ) iterates the whole table – CALCULATE with a filter is faster."),
                                      _nahrad(dax, v.zacatek, v.konec,
                                              f"CALCULATE ( COUNTROWS ( {zdroj} ), KEEPFILTERS ( {f.argumenty[1].strip()} ) )")))
         # D02 IFERROR ( a / b [, alt] )
@@ -276,7 +283,7 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
             d = rozdel_operator(v.argumenty[0], "/")
             if d and operatory_nahore(v.argumenty[0]) == ["/"]:
                 alt = f", {v.argumenty[1].strip()}" if len(v.argumenty) == 2 and v.argumenty[1].strip().upper() not in ("BLANK()", "BLANK ( )") else ""
-                out.append(Navrh("D02", True, "IFERROR kolem dělení – DIVIDE ošetří nulu sám a je rychlejší.",
+                out.append(Navrh("D02", True, L("IFERROR kolem dělení – DIVIDE ošetří nulu sám a je rychlejší.", "IFERROR around a division – DIVIDE handles zero itself and is faster."),
                                  _nahrad(dax, v.zacatek, v.konec, f"DIVIDE ( {d[0]}, {d[1]}{alt} )")))
         # D02 IF ( b = 0, alt, a / b ) / IF ( b <> 0, a / b, alt )
         if v.nazev == "IF" and len(v.argumenty) in (2, 3):
@@ -291,7 +298,7 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
                 if d and re.sub(r"\s", "", d[1]) == re.sub(r"\s", "", cc[0]):
                     alt = vetev_alt.strip()
                     alt = "" if not alt or alt.replace(" ", "").upper() == "BLANK()" else f", {alt}"
-                    out.append(Navrh("D02", True, "Ruční ošetření dělení nulou přes IF – DIVIDE dělá totéž.",
+                    out.append(Navrh("D02", True, L("Ruční ošetření dělení nulou přes IF – DIVIDE dělá totéž.", "Manual division-by-zero handling with IF – DIVIDE does the same."),
                                      _nahrad(dax, v.zacatek, v.konec, f"DIVIDE ( {d[0]}, {d[1]}{alt} )")))
         # D06 IF ( c1, v1, IF ( c2, v2, IF ( … ) ) ) -> SWITCH ( TRUE (), … )
         if v.nazev == "IF" and len(v.argumenty) == 3 and not any(
@@ -311,7 +318,7 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
                 odsaz = re.match(r"[ \t]*", dax[zac:]).group(0)
                 vn = odsaz + "    "
                 radky = f",\n{vn}".join(f"{c}, {h}" for c, h in dvojice) + (f",\n{vn}{jinak}" if jinak else "")
-                out.append(Navrh("D06", True, f"{len(dvojice)} vnořených IF – SWITCH ( TRUE (), … ) je čitelnější.",
+                out.append(Navrh("D06", True, L(f"{len(dvojice)} vnořených IF – SWITCH ( TRUE (), … ) je čitelnější.", f"{len(dvojice)} nested IFs – SWITCH ( TRUE (), … ) is more readable."),
                                  _nahrad(dax, v.zacatek, v.konec, f"SWITCH (\n{vn}TRUE (),\n{vn}{radky}\n{odsaz})")))
         # D11 časová funkce nad datem z faktové tabulky
         if v.nazev in CASOVE:
@@ -327,9 +334,12 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
                     vzor = re.compile(r"(?:'" + re.escape(t.replace("'", "''")) + r"'|" + re.escape(t) + r")\s*\[" + re.escape(c) + r"\]")
                     usek = vzor.sub(lambda _m: f"'{cil[0]}'[{cil[1]}]", dax[v.zacatek:v.konec])
                     novy = _nahrad(dax, v.zacatek, v.konec, usek)
-                out.append(Navrh("D11", False, f"{v.nazev} nad {t}[{c}] (datum z faktové tabulky) – časové funkce potřebují "
-                                 "souvislou tabulku kalendáře, jinak vrací chybné nebo prázdné výsledky."
-                                 + (f" Použij {cil[0]}[{cil[1]}]." if cil else " Napoj fakt na tabulku kalendáře."),
+                out.append(Navrh("D11", False, L(f"{v.nazev} nad {t}[{c}] (datum z faktové tabulky) – časové funkce potřebují "
+                                   "souvislou tabulku kalendáře, jinak vrací chybné nebo prázdné výsledky."
+                                   + (f" Použij {cil[0]}[{cil[1]}]." if cil else " Napoj fakt na tabulku kalendáře."),
+                                   f"{v.nazev} on {t}[{c}] (a date from a fact table) – time intelligence needs a contiguous "
+                                   "date table, otherwise it returns wrong or blank results."
+                                   + (f" Use {cil[0]}[{cil[1]}]." if cil else " Connect the fact to a date table.")),
                                  novy if cil else ""))
                 break
 
@@ -337,7 +347,8 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
     d = rozdel_operator(dax, "/")
     if d and operatory_nahore(dax) == ["/"] and not dax.strip().upper().startswith("VAR") \
             and not re.fullmatch(r"\(?\s*\d+(\.\d+)?\s*\)?", d[1]):                  # / 1000 = převod jednotek, ne riziko
-        out.append(Navrh("D02", True, "Dělení operátorem / – při nule ve jmenovateli vrátí chybu nebo nekonečno; DIVIDE vrátí prázdno.",
+        out.append(Navrh("D02", True, L("Dělení operátorem / – při nule ve jmenovateli vrátí chybu nebo nekonečno; DIVIDE vrátí prázdno.",
+                           "Division with the / operator – a zero denominator returns an error or infinity; DIVIDE returns blank."),
                          f"DIVIDE ( {d[0]}, {d[1]} )"))
 
     # D07 stejná míra 3× a víc – do proměnné (jen když žádný výskyt není uvnitř funkce měnící kontext)
@@ -360,7 +371,8 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
         telo = dax
         for a, b in reversed(pos):
             telo = _nahrad(telo, a, b, jm)
-        out.append(Navrh("D07", True, f"[{nazev}] se počítá {len(pos)}× – ulož ji do proměnné (VAR), spočítá se jednou.",
+        out.append(Navrh("D07", True, L(f"[{nazev}] se počítá {len(pos)}× – ulož ji do proměnné (VAR), spočítá se jednou.",
+                           f"[{nazev}] is evaluated {len(pos)}× – store it in a variable (VAR) so it is calculated once."),
                          f"VAR {jm} = [{nazev}]\nRETURN\n" + "\n".join("    " + r if r.strip() else r for r in telo.strip().splitlines())
                          if not telo.lstrip().upper().startswith("VAR")
                          else f"VAR {jm} = [{nazev}]\n{telo.strip()}"))
@@ -377,12 +389,14 @@ def navrhy(dax: str, kontext: dict) -> list[Navrh]:
             t = dax[r.start(1):r.end(1)]
             t = t[1:-1].replace("''", "'") if t.startswith("'") else t
             if jm in miry and (t, jm) not in sloupce:
-                out.append(Navrh("D13", True, f"Míra [{jm}] zapsaná s tabulkou ({t}[{jm}]) – vypadá jako sloupec; piš míry bez tabulky.",
+                out.append(Navrh("D13", True, L(f"Míra [{jm}] zapsaná s tabulkou ({t}[{jm}]) – vypadá jako sloupec; piš míry bez tabulky.",
+                                   f"Measure [{jm}] written with a table ({t}[{jm}]) – looks like a column; write measures without the table."),
                                  _nahrad(dax, r.start(1), r.end(2) + 1, f"[{jm}]")))
         elif jm not in miry and jm not in pojmenovane and not re.fullmatch(r"Value\d*", jm) and len(nazvy_sl.get(jm, [])) == 1:
             t = nazvy_sl[jm][0]
             tt = t if re.fullmatch(r"[A-Za-z_]\w*", t) else "'" + t.replace("'", "''") + "'"
-            out.append(Navrh("D13", True, f"Sloupec [{jm}] bez tabulky – vypadá jako míra; piš sloupce vždy s tabulkou ({t}[{jm}]).",
+            out.append(Navrh("D13", True, L(f"Sloupec [{jm}] bez tabulky – vypadá jako míra; piš sloupce vždy s tabulkou ({t}[{jm}]).",
+                               f"Column [{jm}] without a table – looks like a measure; always write columns with their table ({t}[{jm}])."),
                              _nahrad(dax, r.start(2) - 1, r.end(2) + 1, f"{tt}[{jm}]")))
     return out
 

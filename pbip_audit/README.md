@@ -5,6 +5,11 @@ Vzniklo při stavbě reportu [Obec v grafu](https://obecvgrafu.cz); nic není v�
 
 🇬🇧 [English version](README.en.md) · Licence MIT · Autor: Jakub Vozar
 
+> **Jazyk výstupů / Output language:** výchozí je čeština. S `--lang en` (nebo proměnnou prostředí
+> `PBIP_AUDIT_LANG=en`) jsou všechny výstupy anglicky – nálezy, doporučení, Markdown, CSV, HTML, šablona oprav i nápověda;
+> přepínače mají i anglická jména (`--output`, `--write`, `--template` …). Id nálezů je v obou jazycích stejné, takže
+> baseline a výjimky platí dál. Vzor nastavení klienta je česky (`nastaveni_priklad.json`) i anglicky (`settings_example.json`).
+
 ## Stažení
 
 - **Zip (vždy poslední verze):** [pbip_audit.zip](https://github.com/vzr-repo/tools/releases/download/pbip-audit-latest/pbip_audit.zip) – rozbal kamkoli a spouštěj skripty z rozbalené složky.
