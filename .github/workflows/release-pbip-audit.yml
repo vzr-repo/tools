@@ -1,0 +1,38 @@
+# Po každé změně v pbip_audit/ na main sestaví pbip_audit.zip a vystaví ho jako release „pbip-audit-latest“
+# (stálý odkaz: https://github.com/vzr-repo/tools/releases/download/pbip-audit-latest/pbip_audit.zip).
+name: Release pbip_audit
+on:
+  push:
+    branches: [main]
+    paths: ["pbip_audit/**", "LICENSE", ".github/workflows/release-pbip-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-pbip-audit
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest && python -m pytest -q pbip_audit/tests
+      - name: Zabalit
+        run: |
+          mkdir -p dist/pbip_audit
+          cp pbip_audit/*.py pbip_audit/README*.md LICENSE dist/pbip_audit/
+          cp -r pbip_audit/skill dist/pbip_audit/
+          echo "${GITHUB_SHA::7} $(date -u +%Y-%m-%d)" > dist/pbip_audit/VERSION
+          cd dist && zip -qr pbip_audit.zip pbip_audit
+      - name: Vystavit release pbip-audit-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete pbip-audit-latest --cleanup-tag --yes || true
+          gh release create pbip-audit-latest dist/pbip_audit.zip \
+            --title "pbip_audit – poslední verze / latest ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})" \
+            --notes "Rozbal a spusť např. \`python pbip_audit/audit.py \"cesta/k/Report.pbip\" --vystup audit\`. Python 3.10+, bez dalších balíčků. Návod: [CZ](https://github.com/vzr-repo/tools/blob/main/pbip_audit/README.md) · [EN](https://github.com/vzr-repo/tools/blob/main/pbip_audit/README.en.md)" \
+            --latest
