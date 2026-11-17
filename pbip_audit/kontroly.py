@@ -7,6 +7,7 @@ rls (zabezpečení na úrovni řádků a objektů – jestli filtry rolí dojdou
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ NADPISY = {
     "S01": "Rozbitý filtr role", "S02": "Filtr role nedojde ke všem datům", "S03": "Bezpečnostní filtr oběma směry",
     "S04": "Role bez filtru", "S05": "OLS skrývá použité pole", "S06": "USERNAME místo USERPRINCIPALNAME",
     "S07": "RLS filtr na faktové tabulce", "S08": "Dimenze mimo dosah filtru role",
+    "M20": "Různé datové typy na koncích vztahu", "M21": "Textový klíč ve vztahu", "M22": "Cyklická závislost měr",
+    "M23": "Nejednotné termíny (glosář)", "M24": "Neúplná rodina měr",
 }
 DATOVE_VIZUALY = {"barChart", "clusteredBarChart", "columnChart", "clusteredColumnChart", "lineChart", "areaChart", "pieChart",
                   "donutChart", "tableEx", "pivotTable", "map", "azureMap", "filledMap", "scatterChart", "funnel", "waterfallChart",
@@ -61,10 +64,33 @@ def _procentni(m) -> bool:
 class Nalez:
     kod: str
     uroven: str          # chyba / varovani / info
-    oblast: str          # model / report / ai
+    oblast: str          # model / report / ai / rls
     objekt: str
     popis: str
     doporuceni: str = ""
+
+    @property
+    def id(self) -> str:
+        """Stabilní ID nálezu (kód + objekt + popis bez čísel) – pro baseline a výjimky. Mění se jen se změnou objektu
+        nebo typu problému, ne s počty („12 z 14 měr“ → „11 z 14“ je pořád tentýž nález)."""
+        klic = "|".join((self.kod, self.objekt, re.sub(r"\d+", "#", self.popis)))
+        return hashlib.sha1(klic.encode("utf-8")).hexdigest()[:10]
+
+
+def nastaveni(p: Projekt) -> dict:
+    """Nastavení klienta (glosář termínů, rodiny měr) – audit.py ho přiřadí do p.nastaveni z --nastaveni soubor.json."""
+    return getattr(p, "nastaveni", None) or {}
+
+
+def tokeny(nazev: str) -> list[str]:
+    """„TotalCostCenter_2024“ / „Total cost-center“ -> ['total', 'cost', 'center', '2024'] (camelCase, zkratky, _ - mezery)."""
+    nazev = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", nazev)
+    nazev = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", nazev)
+    return [t.casefold() for t in re.findall(r"\w+", nazev.replace("_", " "))]
+
+
+def _obsahuje(tok: list[str], fraze: list[str]) -> bool:
+    return bool(fraze) and any(tok[i:i + len(fraze)] == fraze for i in range(len(tok) - len(fraze) + 1))
 
 
 def kontrola(fn):
@@ -125,8 +151,9 @@ def nepouzita_pole(p: Projekt):
             pouzite.add((_jmeno(t), c))
     out = [Nalez("M05", "info", "ai", s.plny, "Viditelný sloupec se nikde nepoužívá.", "Skryj ho (nebo odstraň v Power Query).")
            for s in p.sloupce if not s.skryty and (s.tabulka, s.nazev) not in pouzite]
-    out += [Nalez("M05", "info", "model", f"{m.tabulka}{m.plny}", "Míra se nikde nepoužívá (vizuály ani jiné míry).",
-                  "Smaž ji, nebo přesuň do složky „Nepoužité“, ať nemate.")
+    out += [Nalez("M05", "info", "model", f"{m.tabulka}{m.plny}", "Míru nepoužívá tento report (vizuály ani jiné míry).",
+                  "Skryj ji nebo přesuň do složky „Nepoužité“. Před smazáním ověř Service → Lineage / Impact analysis: "
+                  "jiné reporty, Excel ani dotazy přes XMLA nad stejným modelem audit nevidí.")
             for m in p.miry if (m.tabulka, m.nazev) not in pouzite and not m.skryta]
     return out
 
@@ -322,6 +349,112 @@ def pocitane_sloupce(p: Projekt):
                   "Počítané sloupce na velkých tabulkách zvětšují model a zpomalují refresh – přesuň do Power Query / zdroje, "
                   "nebo nahraď mírou.")
             for s in p.sloupce if s.vypocet and s.tabulka in fakta]
+
+
+def _typ(t: str) -> str:
+    t = t.casefold()
+    return {"datetime": "dateTime", "date": "dateTime", "int64": "int64", "integer": "int64", "decimal": "decimal",
+            "double": "double", "string": "string", "boolean": "boolean"}.get(t, t)
+
+
+@kontrola
+def typy_ve_vztazich(p: Projekt):
+    """M20 různé datové typy na koncích vztahu (Desktop takový vztah odmítne / tiše nespáruje řádky),
+    M21 textový klíč na straně 1 (info – větší model, pomalejší spojení, citlivé na mezery a velikost písmen)."""
+    sloupce = {(s.tabulka, s.nazev): s for s in p.sloupce}
+    out = []
+    for v in p.vztahy:
+        (tz, cz), (td, cd) = _rozdel_odkaz(v.z), _rozdel_odkaz(v.do)
+        a, b = sloupce.get((_jmeno(tz), cz)), sloupce.get((_jmeno(td), cd))
+        if not a or not b or not a.typ or not b.typ:
+            continue
+        if _typ(a.typ) != _typ(b.typ):
+            out.append(Nalez("M20", "chyba", "model", f"{v.z} → {v.do}", f"Konce vztahu mají různé typy: {a.typ} × {b.typ}.",
+                             "Sjednoť datový typ v Power Query (obvykle celé číslo nebo text na obou stranách)."))
+        elif _typ(b.typ) == "string" and v.kardinalita_do == "one":
+            out.append(Nalez("M21", "info", "model", f"{v.z} → {v.do}", "Vztah spojuje textový klíč.",
+                             "Funguje, ale celočíselný klíč je menší a rychlejší a nevadí mu mezery ani velikost písmen. "
+                             "U kódů (měna, země) je text v pořádku."))
+    return out
+
+
+@kontrola
+def cykly_mer(p: Projekt):
+    """Míra, která přes jiné míry odkazuje sama na sebe. Desktop ji neuloží / vrátí chybu „circular dependency“."""
+    miry = {m.nazev: m for m in p.miry}
+    hrany = {n: sorted(x for x in dax_odkazy(m.dax)[0] if x in miry) for n, m in miry.items()}
+    out, videne, hotovo = [], set(), set()
+
+    def dfs(n, cesta):
+        if n in cesta:
+            cyklus = cesta[cesta.index(n):] + [n]
+            if frozenset(cyklus) not in videne:
+                videne.add(frozenset(cyklus))
+                m = miry[n]
+                out.append(Nalez("M22", "chyba", "model", f"{m.tabulka}{m.plny}",
+                                 "Cyklická závislost: " + " → ".join(f"[{x}]" for x in cyklus) + ".",
+                                 "Rozbij cyklus – některá z měr musí počítat ze sloupců, ne z ostatních měr v kruhu."))
+            return
+        if n in hotovo:
+            return
+        for x in hrany[n]:
+            dfs(x, cesta + [n])
+        hotovo.add(n)
+
+    for n in sorted(miry):
+        dfs(n, [])
+    return out
+
+
+@kontrola
+def glosar_terminu(p: Projekt):
+    """Názvy, které používají jinou variantu termínu, než určuje glosář klienta („CC“, „CostCenter“ místo
+    „Nákladové středisko“). Bez glosáře (--nastaveni) se nekontroluje. Shoda po celých slovech, takže „CC“ nenajde „Account“."""
+    terminy = nastaveni(p).get("terminy", {})
+    if not terminy:
+        return []
+    objekty = [("tabulka", t.nazev, t.nazev) for t in p.tabulky if not t.skryta and not t.nazev.startswith(SYSTEMOVE)] + \
+              [("míra", m.nazev, f"{m.tabulka}{m.plny}") for m in p.miry if not m.skryta] + \
+              [("sloupec", s.nazev, s.plny) for s in p.sloupce if not s.skryty]
+    out = []
+    for druh, nazev, objekt in objekty:
+        tok = tokeny(nazev)
+        for preferovany, varianty in terminy.items():
+            if _obsahuje(tok, tokeny(preferovany)):
+                continue
+            nalezena = next((v for v in varianty if _obsahuje(tok, tokeny(v))), None)
+            if nalezena:
+                out.append(Nalez("M23", "varovani", "ai", objekt, f"{druh.capitalize()} používá „{nalezena}“, glosář určuje „{preferovany}“.",
+                                 "Jeden pojem = jeden název v celém modelu. Copilot jinak bere „CC“ a „Nákladové středisko“ jako dvě "
+                                 "různé věci. Přejmenuj v Desktopu / Tabular Editoru (opraví i odkazy), nebo přidej výjimku."))
+                break
+    return out
+
+
+@kontrola
+def rodiny_mer(p: Projekt):
+    """Rodiny měr z nastavení klienta (např. Skutečnost / Plán, Actual / Budget): když existuje „Tržby Skutečnost“
+    (nebo „Skutečnost Tržby“), má existovat i „Tržby Plán“. Bez nastavení se nekontroluje."""
+    nazvy = {m.nazev.casefold() for m in p.miry}
+    out = []
+    for rodina in nastaveni(p).get("rodiny", []):
+        for m in sorted(p.miry, key=lambda m: m.nazev):
+            protejsky = None
+            for clen in rodina:
+                konec = re.search(rf"(?i)[ _-]{re.escape(clen)}$", m.nazev)
+                zacatek = re.match(rf"(?i){re.escape(clen)}[ _-]", m.nazev)
+                if konec:
+                    protejsky = [m.nazev[:konec.start() + 1] + jiny for jiny in rodina if jiny != clen]
+                elif zacatek:
+                    protejsky = [jiny + m.nazev[zacatek.end() - 1:] for jiny in rodina if jiny != clen]
+                if protejsky is not None:
+                    break
+            chybi = [x for x in protejsky or [] if x.casefold() not in nazvy]
+            if chybi:
+                out.append(Nalez("M24", "info", "model", f"{m.tabulka}{m.plny}",
+                                 f"V rodině {' / '.join(rodina)} chybí " + ", ".join(f"[{x}]" for x in chybi) + ".",
+                                 "Ověř, jestli protějšek má existovat (uživatel ho bude hledat). Automaticky se nevytváří."))
+    return out
 
 
 # ------------------------------------------------------------------ rls

@@ -1,4 +1,4 @@
-"""Testy nástrojů nastroje/pbip_audit na malých syntetických projektech PBIP (vytvoří se v tmp_path):
+"""Testy nástrojů pbip_audit na malých syntetických projektech PBIP (vytvoří se v tmp_path):
 PBIR + TMDL s nastraženými chybami, starý report.json + model.bim, tenký report a dva reporty nad jedním modelem."""
 import json
 import sys
@@ -177,7 +177,8 @@ def test_legacy_report_a_model_bim(tmp_path):
     assert p.vizualy[0].pole() == {("Prodej", "Tržby"), ("Kategorie", "Typ")}
     assert p.miry[0].dax == "SUM ( Prodej[Částka] )" and p.tabulky[0].popis == "Prodeje"
     assert p.vztahy[0].aktivni is False
-    assert not [n for n in spust(p) if n.uroven == "chyba"]
+    chyby = [n for n in spust(p) if n.uroven == "chyba"]
+    assert [n.kod for n in chyby] == ["M20"]                                 # fixture spojuje double × string – M20 ho najde
 
 
 def test_tenky_report(tmp_path):
@@ -438,3 +439,101 @@ def test_oprav_sablona_a_zapis(tmp_path):
     po = fakt.read_bytes()
     proved(q, nacti_navrh(navrh), zapsat=True)                              # podruhé: nic nového
     assert fakt.read_bytes() == po
+
+
+# ------------------------------------------------------------------ M20–M24, id, nastavení, baseline, exit kódy, pojistka parseru
+def test_typy_ve_vztazich(tmp_path):
+    vztahy = VZTAHY + "\nrelationship r4\n\tfromColumn: Fakt.Datum\n\ttoColumn: Zakaznik.ZakaznikKey\n" \
+                      "\nrelationship r5\n\tfromColumn: Fakt.Mena\n\ttoColumn: Osirela.'Kód měny'\n"
+    k = nalezy_podle_kodu(Projekt(model_projekt(tmp_path, vztahy=vztahy)))
+    assert [n.objekt for n in k["M20"]] == ["Fakt.Datum → Zakaznik.ZakaznikKey"] and "dateTime × int64" in k["M20"][0].popis
+    assert [n.objekt for n in k["M21"]] == ["Fakt.Mena → Osirela.'Kód měny'"]  # n:n Fakt→Kurzy (text) se nehlásí
+
+
+def test_cyklus_mer(tmp_path):
+    projekt = model_projekt(tmp_path)
+    f = tmp_path / "Novy.SemanticModel" / "definition" / "tables" / "Fakt.tmdl"
+    f.write_text(f.read_text(encoding="utf-8") + "\n\tmeasure Ax = [Bx] + 1\n\n\tmeasure Bx = [Cx]\n\n\tmeasure Cx = [Ax] * 2\n"
+                 "\n\tmeasure Sama = [Sama]\n", encoding="utf-8")
+    k = nalezy_podle_kodu(Projekt(projekt))
+    popisy = sorted(n.popis for n in k["M22"])
+    assert len(popisy) == 2                                                  # každý cyklus jednou
+    assert any("[Ax] → [Bx] → [Cx] → [Ax]" in x for x in popisy) and any("[Sama] → [Sama]" in x for x in popisy)
+
+
+def test_glosar_a_rodiny(tmp_path):
+    projekt = model_projekt(tmp_path)
+    f = tmp_path / "Novy.SemanticModel" / "definition" / "tables" / "Fakt.tmdl"
+    f.write_text(f.read_text(encoding="utf-8") + "\n\tmeasure 'Tržby Skutečnost' = 1\n\n\tmeasure 'Náklady Skutečnost' = 1\n"
+                 "\n\tmeasure 'Náklady Plán' = 1\n\n\tmeasure 'Account Total' = 1\n\n\tmeasure 'Total CC' = 1\n"
+                 "\n\tmeasure 'Náklady CostCenter' = 1\n", encoding="utf-8")
+    p = Projekt(projekt)
+    assert "M23" not in nalezy_podle_kodu(p) and "M24" not in nalezy_podle_kodu(p)      # bez nastavení se nekontroluje
+    p.nastaveni = {"terminy": {"Nákladové středisko": ["Cost Center", "CC"], "Oblast": ["Region"]},
+                   "rodiny": [["Skutečnost", "Plán"]]}
+    k = nalezy_podle_kodu(p)
+    assert sorted(n.objekt for n in k["M23"]) == ["Fakt[Náklady CostCenter]", "Fakt[Total CC]", "Zakaznik[Region]"]
+    assert [(n.objekt, n.popis) for n in k["M24"]] == [("Fakt[Tržby Skutečnost]", "V rodině Skutečnost / Plán chybí [Tržby Plán].")]
+
+
+def test_id_nalezu_stabilni():
+    from kontroly import Nalez
+    a = Nalez("M14", "varovani", "ai", "Fakt", "12 z 14 měr není v žádné složce.")
+    assert a.id == Nalez("M14", "varovani", "ai", "Fakt", "11 z 14 měr není v žádné složce.", "jiné doporučení").id
+    assert a.id != Nalez("M14", "varovani", "ai", "Prodej", "12 z 14 měr není v žádné složce.").id
+    assert len(a.id) == 10
+
+
+def spust_audit(monkeypatch, *argv):
+    import audit
+    monkeypatch.setattr(sys, "argv", ["audit.py", *map(str, argv)])
+    with pytest.raises(SystemExit) as e:
+        audit.main()
+    return e.value.code
+
+
+def test_audit_nastaveni_vyjimky_baseline_exit(tmp_path, monkeypatch):
+    projekt, out = model_projekt(tmp_path / "p"), tmp_path / "out"
+    assert spust_audit(monkeypatch, projekt, "--vystup", out) == 0             # výchozí --fail-on nic
+    assert spust_audit(monkeypatch, projekt, "--vystup", out, "--fail-on", "varovani") == 1
+    csv_soubor = out / "audit_Novy.csv"
+    hlavicka = csv_soubor.read_text(encoding="utf-8-sig").splitlines()[0]
+    assert hlavicka.endswith(";id")
+    # glosář přidá nález, výjimka bez důvodu = chyba nastavení, výjimka s důvodem nález potlačí
+    nast = tmp_path / "klient.json"
+    zapis(nast, {"terminy": {"Oblast": ["Region"]}, "vyjimky": [{"kod": "M12", "objekt": "*"}]})
+    assert spust_audit(monkeypatch, projekt, "--vystup", out, "--nastaveni", nast) == 3
+    zapis(nast, {"terminy": {"Oblast": ["Region"]},
+                 "vyjimky": [{"kod": "M12", "objekt": "Kal*", "duvod": "kalendář označí klient"}]})
+    assert spust_audit(monkeypatch, projekt, "--vystup", out, "--nastaveni", nast, "--baseline", csv_soubor) == 0
+    md = (out / "audit_Novy.md").read_text(encoding="utf-8")
+    assert "### M23" in md and "### M12" not in md and "1 potlačeno výjimkou" in md
+    assert "Nové chyby a varování: 1" in md and "Zakaznik[Region]" in md.split("## Proti baseline")[1]
+    assert "Vyřešené nálezy (všech úrovní): 1" in md                          # M12 potlačený = zmizel
+    # baseline = tentýž soubor, do kterého se zapisuje: čte se před zápisem, podruhé tedy 0 nových
+    assert spust_audit(monkeypatch, projekt, "--vystup", out, "--nastaveni", nast, "--baseline", csv_soubor) == 0
+    assert "Nové chyby a varování: 0" in (out / "audit_Novy.md").read_text(encoding="utf-8")
+
+
+def test_baseline_ze_stareho_csv_bez_id(tmp_path, monkeypatch):
+    projekt, out = model_projekt(tmp_path / "p"), tmp_path / "out"
+    spust_audit(monkeypatch, projekt, "--vystup", out)
+    stary = tmp_path / "stary.csv"
+    radky = (out / "audit_Novy.csv").read_text(encoding="utf-8-sig").splitlines()
+    stary.write_text("\n".join(r.rsplit(";", 1)[0] for r in radky), encoding="utf-8-sig")    # CSV před zavedením id
+    spust_audit(monkeypatch, projekt, "--vystup", out, "--baseline", stary)
+    md = (out / "audit_Novy.md").read_text(encoding="utf-8")
+    assert "Nové chyby a varování: 0" in md and "Vyřešené nálezy (všech úrovní): 0" in md
+
+
+def test_pojistka_parseru(tmp_path, monkeypatch):
+    from audit import kontrola_nacteni
+    projekt = model_projekt(tmp_path)
+    assert kontrola_nacteni(Projekt(projekt)) == []
+    tabulky = tmp_path / "Novy.SemanticModel" / "definition" / "tables"
+    for f in tabulky.glob("*.tmdl"):                                         # sloupce, které parser „nepřečte“
+        f.write_text(f.read_text(encoding="utf-8").replace("\tcolumn ", "\tneznamyBlok "), encoding="utf-8")
+    problemy = kontrola_nacteni(Projekt(projekt))
+    assert problemy and "0 sloupců" in problemy[0]
+    assert spust_audit(monkeypatch, projekt, "--vystup", tmp_path / "out") == 3
+    assert "Model se nenačetl správně" in (tmp_path / "out" / "audit_Novy.md").read_text(encoding="utf-8")

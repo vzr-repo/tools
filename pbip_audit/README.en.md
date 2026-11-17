@@ -32,7 +32,7 @@ fixes – without Power BI Desktop, straight from the project files. Built while
 - `oprav.py` (bulk fixes) writes TMDL only.
 
 **Tested** (versions up to 11/2026) on 66 public PBIP projects from GitHub (Microsoft / community: PBIR and PBIR-Legacy,
-TMDL and model.bim, calculation groups, hierarchies, several reports over one model). The newer checks (M12–M19, R14,
+TMDL and model.bim, calculation groups, hierarchies, several reports over one model). The newer checks (M12–M24, R14,
 S01–S08), `porovnej.py` and `oprav.py` are so far verified on a Contoso demo model ("before" and "after" versions plus
 a copy with roles) and on synthetic tests. Tests: `python -m pytest pbip_audit/tests`.
 
@@ -40,7 +40,7 @@ a copy with roles) and on synthetic tests. Tests: `python -m pytest pbip_audit/t
 
 | Script | What it does | Output |
 |---|---|---|
-| `audit.py <project> [--vse]` | 40 checks of the model, report, AI readiness and security (RLS/OLS) + AI readiness score 0–100 | `audit_<name>.md`, `.csv` |
+| `audit.py <project> [--vse]` | 45 checks of the model, report, AI readiness and security (RLS/OLS) + AI readiness score 0–100; optional client settings, baseline and exit codes for CI | `audit_<name>.md`, `.csv` |
 | `ai_dokumentace.py <project>` | the whole model (tables, columns, measures with DAX, Power Query, relationships, roles) and report pages with their fields in one Markdown file – context for an LLM | `model_<name>.md` |
 | `porovnej.py <before> <after>` | compare two states: AI score per component, findings per check, resolved / new errors and warnings | `porovnani_<a>_<b>.md` |
 | `oprav.py <project> --sablona f.csv` → `oprav.py <project> f.csv [--zapsat]` | fix template from findings → fill in values (by hand or with AI) → preview → write into TMDL: descriptions, hiding, display folders, format strings | edits `*.tmdl` |
@@ -50,6 +50,7 @@ a copy with roles) and on synthetic tests. Tests: `python -m pytest pbip_audit/t
 
 ```bash
 python pbip_audit/audit.py "path/to/MyReport.pbip" --vystup audit                     # audit into folder ./audit
+python pbip_audit/audit.py "path/to/MyReport.pbip" --vystup audit --nastaveni client.json --baseline audit/audit_MyReport.csv --fail-on chyba
 python pbip_audit/ai_dokumentace.py "path/to/MyReport.pbip" --vystup audit --bez-m      # docs without Power Query
 python pbip_audit/porovnej.py "backup/MyReport.pbip" "path/to/MyReport.pbip" --vystup audit
 python pbip_audit/oprav.py "path/to/MyReport.pbip" --sablona fixes.csv                  # then fill in column "hodnota"
@@ -116,6 +117,11 @@ Levels: `chyba` = error (broken / will misbehave), `varovani` = warning (hurts u
 | M17 | model | duplicate measures (same DAX ignoring whitespace) and measures that only wrap another measure |
 | M18 | model | many-to-many relationships |
 | M19 | model | calculated columns on a fact table |
+| M20 | model | different data types on the two ends of a relationship (error) |
+| M21 | model | text key on the one side of a relationship (info; fine for currency / country codes) |
+| M22 | model | circular measure dependency ([A] → [B] → [A]) |
+| M23 | AI | inconsistent terms according to the client glossary ("CC" instead of "Cost Center") – only with `--nastaveni` |
+| M24 | model | incomplete measure family ("Sales Actual" exists, "Sales Budget" is missing) – only with `--nastaveni` |
 | R01 | report | data visuals without a title |
 | R02 | report | colours hard-coded in a visual instead of the theme |
 | R03 | report | hidden pages |
@@ -138,6 +144,30 @@ Levels: `chyba` = error (broken / will misbehave), `varovani` = warning (hurts u
 | S07 | RLS | RLS filter directly on a fact table (slower, doesn't filter dimensions) |
 | S08 | RLS | dimension outside the reach of the role filter (info – make sure it holds no sensitive data) |
 
+M05 for measures doesn't say "delete": the audit sees only this report, not other reports, Excel or XMLA queries over
+the same model. Check Lineage / Impact analysis in the Service before deleting.
+
+### Client settings, exceptions, baseline, exit codes
+
+`--nastaveni client.json` (template: `nastaveni_priklad.json`, plain JSON, standard library only):
+
+- `terminy` (terms) – preferred name → variants (M23). Matches whole words including camelCase, so "CC" finds
+  "TotalCC" and "CC Costs" but not "Account".
+- `rodiny` (families) – measure suffixes / prefixes that should exist together, e.g. `["Actual", "Budget"]` (M24).
+- `vyjimky` (exceptions) – suppressed findings: `{"id": "…"}` (id is the last CSV column) or
+  `{"kod": "M21", "objekt": "*Currency*"}` (pattern with `*` and `?`). **A reason (`duvod`) is required** – an
+  exception without one stops the audit. The summary shows how many findings were suppressed.
+
+Every finding has a **stable id** (code + object + description without numbers), so "12 of 14 measures" → "11 of 14"
+is still the same finding. `--baseline audit_X.csv` (a previous run; it may even be the file being overwritten) adds
+new errors / warnings and the number of resolved findings to the summary. Works with older CSVs without the id column
+too. `porovnej.py` matches findings by the same id.
+
+`--fail-on nic | chyba | varovani` (none / error / warning, default `nic`) – exit code: 0 OK, 1 warnings, 2 errors,
+**3 the project can't be loaded or the parser failed**. Parser safeguard: when the model has tables and relationships
+but 0 columns, or more than half of the relationship ends are missing from the loaded model, the audit says so at the
+top of the Markdown and returns 3 – instead of a silently "clean" result.
+
 **How the RLS check computes reach:** a role filter travels only along active relationships, from the one side to the
 many side (for many-to-many from the "to" side to the "from" side); the other way only for 1:1 relationships or with
 *Apply security filter in both directions*. RLS never uses USERELATIONSHIP or bidirectional cross-filtering without the
@@ -152,7 +182,8 @@ structure. (Until 11/2026 the score had only the first four components – older
 ## Recommended workflow for auditing someone else's report
 
 1. Save the report as PBIP (PBIR + TMDL) into its own folder and put it under git – every change can be reverted.
-2. `audit.py` → errors first (M10, M11, R11, S01, S05), then warnings (for RLS mainly S02).
+2. `audit.py` → errors first (M10, M11, M20, M22, R11, S01, S05), then warnings (for RLS mainly S02).
+   If the client has its own terminology, prepare `client.json` (glossary, measure families) and run with `--nastaveni`.
 3. `oprav.py --sablona` + `ai_dokumentace.py` → give an AI both the documentation and the template and let it fill in
    descriptions, folders and formats; review, then `oprav.py … --zapsat` – the fastest way to an AI score above 80.
 4. Do renames (M09, M13) in Desktop or Tabular Editor – references in DAX and visuals must be fixed too.

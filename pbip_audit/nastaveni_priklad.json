@@ -1,0 +1,35 @@
+{
+  "_popis": "Nastavení klienta pro audit.py --nastaveni. Klíče začínající _ se ignorují.",
+  "_terminy": "preferovaný název -> varianty, které se v názvech tabulek, měr a viditelných sloupců hlásí jako M23 (shoda po celých slovech)",
+  "terminy": {
+    "Nákladové středisko": [
+      "Cost Center",
+      "CostCenter",
+      "CC",
+      "NS"
+    ],
+    "Zákazník": [
+      "Klient",
+      "Odběratel"
+    ]
+  },
+  "_rodiny": "skupiny přípon/předpon měr, které mají existovat společně – M24",
+  "rodiny": [
+    [
+      "Skutečnost",
+      "Plán"
+    ],
+    [
+      "Actual",
+      "Budget"
+    ]
+  ],
+  "_vyjimky": "potlačené nálezy; {\"id\": …} z CSV, nebo {\"kod\": …, \"objekt\": vzor se * a ?}; duvod je povinný",
+  "vyjimky": [
+    {
+      "kod": "M21",
+      "objekt": "*Currency*",
+      "duvod": "Kód měny (ISO 4217) je přirozený textový klíč."
+    }
+  ]
+}

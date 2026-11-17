@@ -46,9 +46,9 @@ def main():
     for kod in sorted(set(ka) | set(kb)):
         if ka[kod] != kb[kod] or ka[kod]:
             md.append(f"| {kod} | {NADPISY.get(kod, '')} | {ka[kod]} | {kb[kod]} | {zn(kb[kod] - ka[kod])} |")
-    klic = {(n.kod, n.objekt, n.popis) for n in na}, {(n.kod, n.objekt, n.popis) for n in nb}
+    klic = {n.id for n in na}, {n.id for n in nb}
     for nadpis, mnozina, nalezy in (("Nové chyby a varování", klic[1] - klic[0], nb), ("Vyřešené chyby a varování", klic[0] - klic[1], na)):
-        vyber = [n for n in nalezy if (n.kod, n.objekt, n.popis) in mnozina and n.uroven != "info"]
+        vyber = [n for n in nalezy if n.id in mnozina and n.uroven != "info"]
         md += ["", f"## {nadpis} ({len(vyber)})", ""]
         md += [f"- {n.kod} {n.popis} – `{n.objekt}`" for n in sorted(vyber, key=lambda n: (n.kod, n.objekt))[:60]]
         if len(vyber) > 60:

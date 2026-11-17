@@ -23,7 +23,7 @@ jobs:
       - name: Zabalit
         run: |
           mkdir -p dist/pbip_audit
-          cp pbip_audit/*.py pbip_audit/README*.md LICENSE dist/pbip_audit/
+          cp pbip_audit/*.py pbip_audit/*.json pbip_audit/README*.md LICENSE dist/pbip_audit/
           cp -r pbip_audit/skill dist/pbip_audit/
           echo "${GITHUB_SHA::7} $(date -u +%Y-%m-%d)" > dist/pbip_audit/VERSION
           cd dist && zip -qr pbip_audit.zip pbip_audit

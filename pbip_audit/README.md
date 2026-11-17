@@ -27,7 +27,7 @@ Vzniklo při stavbě reportu [Obec v grafu](https://obecvgrafu.cz); nic není v�
 
 **Ověřeno** (verze do 11/2026) na 66 veřejných projektech PBIP z GitHubu (Microsoft/komunita: PBIR i PBIR-Legacy, TMDL i model.bim,
 výpočetní skupiny, hierarchie, víc reportů nad jedním modelem) a na reportu Obec v grafu. Parser TMDL načetl všechny
-míry, sloupce a tabulky (kontrola počtů proti souborům). Nové kontroly (M12–M19, R14, S01–S08), `porovnej.py` a `oprav.py` jsou zatím
+míry, sloupce a tabulky (kontrola počtů proti souborům). Nové kontroly (M12–M24, R14, S01–S08), `porovnej.py` a `oprav.py` jsou zatím
 ověřené na demo modelu (Contoso, verze „před“ a „po“ + kopie s rolemi) a syntetickými testy.
 Testy: `python -m pytest pbip_audit/tests`.
 
@@ -35,7 +35,7 @@ Testy: `python -m pytest pbip_audit/tests`.
 
 | Skript | Co dělá | Výstup |
 |---|---|---|
-| `audit.py <projekt> [--vse]` | 40 kontrol modelu, reportu, připravenosti pro AI a zabezpečení (RLS/OLS) + skóre AI 0–100 | `audit_<nazev>.md`, `.csv` |
+| `audit.py <projekt> [--vse]` | 45 kontrol modelu, reportu, připravenosti pro AI a zabezpečení (RLS/OLS) + skóre AI 0–100; volitelně nastavení klienta, baseline a exit kódy pro CI | `audit_<nazev>.md`, `.csv` |
 | `ai_dokumentace.py <projekt>` | celý model (tabulky, sloupce, míry s DAX, Power Query, vztahy, role) a stránky s poli v jednom Markdownu | `model_<nazev>.md` |
 | `porovnej.py <před> <po>` | porovnání dvou stavů: skóre AI po složkách, nálezy podle kontrol, vyřešené / nové chyby a varování | `porovnani_<a>_<b>.md` |
 | `oprav.py <projekt> --sablona n.csv` → `oprav.py <projekt> n.csv [--zapsat]` | návrh oprav z nálezů → doplnit hodnoty (ručně / AI) → náhled → zápis do TMDL: popisy, skrytí, složky měr, formáty | úprava `*.tmdl` |
@@ -45,6 +45,7 @@ Testy: `python -m pytest pbip_audit/tests`.
 
 ```bash
 python pbip_audit/audit.py "cesta/k/MujReport" --vystup audit
+python pbip_audit/audit.py "cesta/k/MujReport" --vystup audit --nastaveni klient.json --baseline audit/audit_MujReport.csv
 python pbip_audit/ai_dokumentace.py "cesta/k/MujReport" --vystup audit --bez-m
 python pbip_audit/menu_stranek.py "cesta/k/MujReport" --skupiny menu.json
 python pbip_audit/porovnej.py "zaloha/MujReport.pbip" "cesta/k/MujReport.pbip" --vystup audit
@@ -114,6 +115,32 @@ Ověřeno na veřejných projektech: [RuiRomano/pbip-demo](https://github.com/Ru
 | S06 | RLS | USERNAME() místo USERPRINCIPALNAME() |
 | S07 | RLS | RLS filtr přímo na faktové tabulce (pomalejší, nefiltruje dimenze) |
 | S08 | RLS | dimenze mimo dosah filtru role (info – ověř, že neobsahuje citlivá data) |
+| M20 | model | různé datové typy na koncích vztahu (chyba) |
+| M21 | model | textový klíč na straně 1 vztahu (info; u kódů měn / zemí je v pořádku) |
+| M22 | model | cyklická závislost měr ([A] → [B] → [A]) |
+| M23 | AI | nejednotné termíny podle glosáře klienta („CC“ místo „Nákladové středisko“) – jen s `--nastaveni` |
+| M24 | model | neúplná rodina měr (je „Tržby Skutečnost“, chybí „Tržby Plán“) – jen s `--nastaveni` |
+
+M05 u měr neříká „smaž“: audit vidí jen tento report, ne další reporty, Excel ani dotazy přes XMLA nad stejným modelem.
+Před smazáním ověř Lineage / Impact analysis v Service.
+
+### Nastavení klienta, výjimky, baseline, exit kódy
+
+`--nastaveni klient.json` (vzor `nastaveni_priklad.json`, jen standardní knihovna, žádný YAML):
+
+- `terminy` – preferovaný název → varianty (M23). Shoda po celých slovech včetně camelCase, takže „CC“ najde
+  „TotalCC“ i „CC Náklady“, ale ne „Account“.
+- `rodiny` – přípony / předpony měr, které mají existovat společně, např. `["Skutečnost", "Plán"]` (M24).
+- `vyjimky` – potlačené nálezy: `{"id": "…"}` (id je poslední sloupec CSV) nebo `{"kod": "M21", "objekt": "*Currency*"}`
+  (vzor se `*` a `?`). **Důvod je povinný** – výjimka bez `duvod` audit zastaví. V souhrnu je vidět počet potlačených.
+
+Každý nález má **stabilní id** (kód + objekt + popis bez čísel), takže „12 z 14 měr“ → „11 z 14“ je pořád tentýž nález.
+`--baseline audit_X.csv` (předchozí běh; může to být i soubor, který se právě přepisuje) přidá do souhrnu nové
+chyby / varování a počet vyřešených nálezů. Funguje i se starším CSV bez sloupce id. `porovnej.py` páruje podle stejného id.
+
+`--fail-on nic | chyba | varovani` (výchozí `nic`) – exit kód: 0 v pořádku, 1 varování, 2 chyby, **3 projekt nejde
+načíst nebo selhal parser**. Pojistka parseru: když model má tabulky a vztahy, ale 0 sloupců, nebo víc než polovina
+konců vztahů v načteném modelu chybí, audit to napíše na začátek MD a vrátí 3 – místo tichého „čistého“ výsledku.
 
 M09 (technické názvy) nově kontroluje i tabulky (tbl_, Dim/Fact, podtržítka) a míry (podtržítka, zkratky typu AOV).
 
@@ -130,7 +157,8 @@ kalendář 5 %. Copilot i AI agenti nad modelem čtou právě názvy, popisy a s
 ## Doporučený postup auditu cizího reportu
 
 1. Ulož report jako PBIP (PBIR + TMDL) do samostatné složky a dej ji do gitu – každá úprava jde vrátit.
-2. `audit.py` → projdi nejdřív chyby (M10, M11, R11, S01, S05), pak varování (u RLS hlavně S02).
+2. `audit.py` → projdi nejdřív chyby (M10, M11, M20, M22, R11, S01, S05), pak varování (u RLS hlavně S02).
+   Má-li klient vlastní terminologii, připrav `klient.json` (glosář, rodiny měr) a spouštěj s `--nastaveni`.
 3. `oprav.py --sablona` + `ai_dokumentace.py` → dej AI dokumentaci i šablonu a nech ji doplnit popisy, složky a formáty;
    zkontroluj, pak `oprav.py … --zapsat` – nejrychlejší cesta ke skóre AI nad 80.
 4. Přejmenování (M09, M13) dělej v Desktopu nebo Tabular Editoru – musí se opravit i odkazy v DAX a vizuálech.
