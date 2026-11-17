@@ -9,6 +9,7 @@ CSV (oddělovač ;, UTF-8): objekt;typ;akce;hodnota;nalez;kontext
 - objekt: Tabulka  nebo  Tabulka[Sloupec / Míra]
 - typ: tabulka / sloupec / mira (prázdné = dohledá se)
 - akce: popis (/// nad objektem) · skryt (isHidden; hodnota ano/ne) · slozka (displayFolder) · format (formatString)
+        · dax (nový výraz míry; v šabloně předvyplněný jen přesný přepis, úpravy k ověření jsou ve sloupci kontext)
 Jen model TMDL (*.SemanticModel/definition/tables). Před zápisem měj projekt v gitu nebo zálohu a v Power BI Desktopu
 ho zavři – Desktop při uložení soubory přepíše.
 """
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from pbip import Projekt, _odsazeni, _rozdel_deklaraci, _jmeno
 
 POLE = ["objekt", "typ", "akce", "hodnota", "nalez", "kontext"]
 VLASTNOST = {"skryt": "isHidden", "slozka": "displayFolder", "format": "formatString"}
+AKCE = ("popis", "dax", *VLASTNOST)
 
 
 # ------------------------------------------------------------------ šablona
@@ -56,6 +59,17 @@ def sablona(p: Projekt, soubor: Path):
             for m in p.miry:
                 if m.tabulka == n.objekt and not m.slozka and not m.skryta:
                     pridej(f"{m.tabulka}[{m.nazev}]", "mira", "slozka", "", "M14", f"DAX: {m.dax}")
+    from audit import dax_navrhy
+    for x in dax_navrhy(p, [n for n in spust(p) if n.oblast == "dax"]):
+        if x["presny"]:
+            pozn = f"PŘESNÉ ({', '.join(x['kody_presne'])}) – stejný výsledek" + \
+                (" (u dělení nulou prázdno místo chyby)" if "D02" in x["kody_presne"] else "")
+            if x["vse"]:
+                pozn += f" | K OVĚŘENÍ ({', '.join(x['kody_vse'])}): {x['vse']}"
+            radky.append([x["objekt"], "mira", "dax", x["presny"], "D", pozn])
+        elif x["vse"]:
+            radky.append([x["objekt"], "mira", "dax", "", "D",
+                          f"K OVĚŘENÍ ({', '.join(x['kody_vse'])}) – po kontrole zkopíruj do hodnota: {x['vse']}"])
     with open(soubor, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f, delimiter=";")
         w.writerow(POLE)
@@ -110,6 +124,35 @@ class Soubor:
         radky = [o * "\t" + "/// " + r.strip() for r in text.strip().splitlines() if r.strip()]
         self.radky[z:i] = radky
 
+    def vyraz(self, nazev, novy: str):
+        """Nahradí výraz míry: jednořádkový za „=“, víceřádkový jako pokračovací řádky odsazené o 2 úrovně."""
+        i = self.najdi("mira", nazev)
+        o = _odsazeni(self.radky[i])
+        hlavicka = re.match(r"\s*measure\s+(?:'(?:[^']|'')*'|[^\s=]+)", self.radky[i]).group(0)
+        j, v_blok = i + 1, self.radky[i].rstrip().endswith("```")
+        while j < len(self.radky):                                       # konec starého výrazu
+            r, oo = self.radky[j], _odsazeni(self.radky[j])
+            if v_blok:
+                j += 1
+                if r.strip() == "```":
+                    break
+                continue
+            if r.strip() and oo <= o + 1:
+                break
+            if not r.strip():                                            # prázdný řádek: patří k výrazu, jen když za ním výraz pokračuje
+                k = j
+                while k < len(self.radky) and not self.radky[k].strip():
+                    k += 1
+                if k >= len(self.radky) or _odsazeni(self.radky[k]) <= o + 1:
+                    break
+            j += 1
+        radky = [r.rstrip() for r in novy.strip("\n").splitlines()]
+        if len(radky) == 1:
+            nove = [f"{hlavicka} = {radky[0].strip()}"]
+        else:
+            nove = [f"{hlavicka} ="] + [(o + 2) * "\t" + r if r.strip() else "" for r in radky]
+        self.radky[i:j] = nove
+
     def vlastnost(self, typ, nazev, klic, hodnota):
         """hodnota None = odstranit, True = příznak bez hodnoty (isHidden), jinak „klic: hodnota“."""
         i = self.najdi(typ, nazev)
@@ -161,16 +204,20 @@ def proved(p: Projekt, navrh: list[dict], zapsat: bool) -> int:
         typ = (r.get("typ") or "").strip().lower() or ("tabulka" if not pole else "mira" if (tab, pole) in miry else "sloupec")
         if tab not in tabulky or (typ == "mira" and (tab, pole) not in miry) or (typ == "sloupec" and (tab, pole) not in sloupce):
             chyby.append(f"{objekt}: objekt v modelu není"); continue
-        if akce not in ("popis", *VLASTNOST):
+        if akce not in AKCE:
             chyby.append(f"{objekt}: neznámá akce „{akce}“"); continue
         if akce == "slozka" and typ == "tabulka":
             chyby.append(f"{objekt}: složka jde jen u míry / sloupce"); continue
+        if akce == "dax" and typ != "mira":
+            chyby.append(f"{objekt}: akce dax jde jen u míry"); continue
         f = tabulky[tab].soubor
         s = soubory.setdefault(f, Soubor(f))
         nazev = tab if typ == "tabulka" else pole
         try:
             if akce == "popis":
                 s.popis(typ, nazev, hodnota)
+            elif akce == "dax":
+                s.vyraz(nazev, (r.get("hodnota") or "").strip("\r\n"))
             elif akce == "skryt":
                 s.vlastnost(typ, nazev, "isHidden", True if hodnota.lower() in ("ano", "a", "yes", "y", "1", "true") else None)
             else:

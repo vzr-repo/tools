@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 
+import dax as daxlib
 from pbip import Projekt, _jmeno, _rozdel_odkaz, dax_odkazy
 
 KONTROLY = []
@@ -31,6 +32,10 @@ NADPISY = {
     "S07": "RLS filtr na faktové tabulce", "S08": "Dimenze mimo dosah filtru role",
     "M20": "Různé datové typy na koncích vztahu", "M21": "Textový klíč ve vztahu", "M22": "Cyklická závislost měr",
     "M23": "Nejednotné termíny (glosář)", "M24": "Neúplná rodina měr",
+    "D01": "FILTER jako filtr CALCULATE", "D02": "Dělení bez DIVIDE", "D03": "Iterátor přes jediný sloupec",
+    "D04": "COUNTROWS ( FILTER … )", "D05": "Zbytečný CALCULATE", "D06": "Vnořené IF", "D07": "Opakovaný výpočet míry",
+    "D08": "Filtr CALCULATE bez sloupce", "D09": "EARLIER v míře", "D10": "USERELATIONSHIP bez vztahu",
+    "D11": "Časová funkce nad datem z faktu", "D12": "Složité míry", "D13": "Kvalifikace odkazů",
 }
 DATOVE_VIZUALY = {"barChart", "clusteredBarChart", "columnChart", "clusteredColumnChart", "lineChart", "areaChart", "pieChart",
                   "donutChart", "tableEx", "pivotTable", "map", "azureMap", "filledMap", "scatterChart", "funnel", "waterfallChart",
@@ -68,6 +73,8 @@ class Nalez:
     objekt: str
     popis: str
     doporuceni: str = ""
+    navrh: str = ""      # navržený nový DAX celé míry (kontroly D…)
+    presny: bool = False  # True = přepis dává stejný výsledek; False = ověřit v Desktopu
 
     @property
     def id(self) -> str:
@@ -731,6 +738,97 @@ def theme(p: Projekt):
         return [Nalez("R12", "info", "report", "celý report", "Report nepoužívá vlastní theme.",
                       "Theme (barvy, písma, výchozí vzhled vizuálů) drží report konzistentní a umožní přebarvit vše najednou.")]
     return []
+
+
+# ------------------------------------------------------------------ kvalita DAX (D…)
+DAX_UROVEN = {"D01": "varovani", "D02": "varovani", "D03": "info", "D04": "varovani", "D05": "info", "D06": "info",
+              "D07": "info", "D11": "varovani", "D13": "info"}
+DAX_DOPORUCENI = {
+    "D01": "Filtr přes celou tabulku je pomalý a filtruje i přes rozšířenou tabulku. Použij podmínku na sloupci "
+           "(s KEEPFILTERS, pokud se mají zachovat stávající filtry).",
+    "D02": "Používej DIVIDE ( čitatel, jmenovatel [, náhrada] ) – při nule vrátí prázdno místo chyby a je rychlejší než IF / IFERROR.",
+    "D03": "SUMX ( T, T[sloupec] ) je totéž co SUM ( T[sloupec] ) – kratší a čitelnější.",
+    "D04": "COUNTROWS ( FILTER ( tabulka, … ) ) prochází řádek po řádku; CALCULATE ( COUNTROWS ( tabulka ), podmínka ) filtruje úložiště.",
+    "D05": "CALCULATE bez filtrů kolem odkazu na míru nic nemění – smaž ho.",
+    "D06": "Řetěz IF nahraď SWITCH ( TRUE (), podmínka1, výsledek1, … ) – čitelnější a snáz se rozšiřuje.",
+    "D07": "Míru použitou víckrát ulož do VAR – počítá se jednou a výraz je kratší.",
+    "D08": "Filtr v CALCULATE musí filtrovat sloupec. Porovnání jen měr (např. [Tržby] > 0) Desktop odmítne – "
+           "použij FILTER ( VALUES ( Tabulka[Sloupec] ), [Míra] > 0 ).",
+    "D09": "EARLIER je pozůstatek před proměnnými – ulož hodnotu vnější řádky do VAR, výraz bude čitelnější.",
+    "D10": "USERELATIONSHIP funguje jen se sloupci, mezi kterými v modelu existuje (neaktivní) vztah.",
+    "D11": "Časové funkce (TOTALYTD, SAMEPERIODLASTYEAR, DATEADD …) potřebují souvislý kalendář. Nad datem z faktové tabulky "
+           "(chybí dny bez prodeje) vrací chybné nebo prázdné výsledky – použij sloupec z tabulky kalendáře.",
+    "D12": "Rozděl míru na menší pojmenované míry nebo proměnné (VAR); dlouhý vnořený výraz se špatně ladí i čte.",
+    "D13": "Sloupce piš vždy s tabulkou (Prodej[Kč]), míry vždy bez ní ([Tržby]) – jinak nejde na první pohled poznat, co je co.",
+}
+
+
+def _dax_kontext(p: Projekt) -> dict:
+    vztahy = []
+    for v in p.vztahy:
+        (zt, zc), (dt, dc) = _rozdel_odkaz(v.z), _rozdel_odkaz(v.do)
+        vztahy.append((_jmeno(zt), zc, _jmeno(dt), dc, v.aktivni))
+    return {"miry": {m.nazev for m in p.miry}, "sloupce": {(s.tabulka, s.nazev) for s in p.sloupce},
+            "typy": {(s.tabulka, s.nazev): s.typ for s in p.sloupce},
+            "kalendare": {t.nazev for t in p.tabulky if t.kategorie.lower() == "time"}, "vztahy": vztahy}
+
+
+@kontrola
+def dax_vzory(p: Projekt):
+    """Vzory DAX, které jdou zjednodušit nebo nefungují, jak by měly – s navrženým přepisem celé míry."""
+    if not p.miry:
+        return []
+    ctx, out = _dax_kontext(p), []
+    for m in p.miry:
+        if not m.dax.strip():
+            continue
+        videno = set()
+        for n in daxlib.navrhy(m.dax, ctx):
+            if (n.kod, n.popis) in videno:
+                continue
+            videno.add((n.kod, n.popis))
+            out.append(Nalez(n.kod, DAX_UROVEN.get(n.kod, "info"), "dax", f"{m.tabulka}{m.plny}", n.popis,
+                             DAX_DOPORUCENI[n.kod], n.dax, n.presny))
+    return out
+
+
+@kontrola
+def dax_chyby(p: Projekt):
+    """Vzory, které v DAX nefungují: filtr CALCULATE bez sloupce, USERELATIONSHIP bez vztahu, EARLIER; a příliš složité míry."""
+    if not p.miry:
+        return []
+    ctx, out = _dax_kontext(p), []
+    pary = {}
+    for zt, zc, dt, dc, akt in ctx["vztahy"]:
+        pary[frozenset({(zt, zc), (dt, dc)})] = akt
+    for m in p.miry:
+        kde = f"{m.tabulka}{m.plny}"
+        for v in daxlib.volani(m.dax, {"CALCULATE", "CALCULATETABLE", "USERELATIONSHIP", "EARLIER", "EARLIEST"}):
+            if v.nazev in ("CALCULATE", "CALCULATETABLE"):
+                for arg in v.argumenty[1:]:
+                    sl, hole = daxlib.odkazy(arg)
+                    if daxlib.je_porovnani(arg) and not sl and hole and all(h in ctx["miry"] for h in hole) and not daxlib.volani(arg):
+                        out.append(Nalez("D08", "chyba", "dax", kde, f"Filtr „{arg.strip()[:60]}“ porovnává jen míry – v CALCULATE nejde použít.",
+                                         DAX_DOPORUCENI["D08"]))
+            elif v.nazev == "USERELATIONSHIP" and len(v.argumenty) == 2:
+                a, b = daxlib.sloupec_odkaz(v.argumenty[0]), daxlib.sloupec_odkaz(v.argumenty[1])
+                if a and b:
+                    akt = pary.get(frozenset({a, b}))
+                    if akt is None:
+                        out.append(Nalez("D10", "chyba", "dax", kde, f"USERELATIONSHIP ( {a[0]}[{a[1]}], {b[0]}[{b[1]}] ) – mezi sloupci není vztah.",
+                                         DAX_DOPORUCENI["D10"]))
+                    elif akt:
+                        out.append(Nalez("D10", "info", "dax", kde, f"USERELATIONSHIP na aktivní vztah {a[0]}[{a[1]}] – {b[0]}[{b[1]}] nic nemění.",
+                                         "USERELATIONSHIP má smysl jen pro neaktivní vztah – smaž ho, nebo ověř, který vztah má být aktivní."))
+            elif v.nazev in ("EARLIER", "EARLIEST"):
+                out.append(Nalez("D09", "info", "dax", kde, f"Míra používá {v.nazev}.", DAX_DOPORUCENI["D09"]))
+                break
+        sk = daxlib.slozitost(m.dax)
+        if sk["hloubka"] >= 7 or sk["calculate"] >= 4 or (sk["znaky"] > 500 and not sk["var"]):
+            out.append(Nalez("D12", "info", "dax", kde,
+                             f"Složitá míra: {sk['znaky']} znaků, vnoření {sk['hloubka']}, CALCULATE {sk['calculate']}×"
+                             + ("" if sk["var"] else ", bez proměnných") + ".", DAX_DOPORUCENI["D12"]))
+    return out
 
 
 def spust(p: Projekt) -> list[Nalez]:

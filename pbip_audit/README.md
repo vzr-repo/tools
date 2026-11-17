@@ -35,16 +35,22 @@ Testy: `python -m pytest pbip_audit/tests`.
 
 | Skript | Co dělá | Výstup |
 |---|---|---|
-| `audit.py <projekt> [--vse]` | 45 kontrol modelu, reportu, připravenosti pro AI a zabezpečení (RLS/OLS) + skóre AI 0–100; volitelně nastavení klienta, baseline a exit kódy pro CI | `audit_<nazev>.md`, `.csv` |
+| `audit.py <projekt> [--vse] [--html]` | 58 kontrol modelu, reportu, kvality DAX, připravenosti pro AI a zabezpečení (RLS/OLS) + skóre AI 0–100; návrhy přepisu měr; grafický HTML report; volitelně nastavení klienta, baseline a exit kódy pro CI | `audit_<nazev>.md`, `.csv`, `.html`, `dax_<nazev>.md` |
 | `ai_dokumentace.py <projekt>` | celý model (tabulky, sloupce, míry s DAX, Power Query, vztahy, role) a stránky s poli v jednom Markdownu | `model_<nazev>.md` |
 | `porovnej.py <před> <po>` | porovnání dvou stavů: skóre AI po složkách, nálezy podle kontrol, vyřešené / nové chyby a varování | `porovnani_<a>_<b>.md` |
-| `oprav.py <projekt> --sablona n.csv` → `oprav.py <projekt> n.csv [--zapsat]` | návrh oprav z nálezů → doplnit hodnoty (ručně / AI) → náhled → zápis do TMDL: popisy, skrytí, složky měr, formáty | úprava `*.tmdl` |
+| `oprav.py <projekt> --sablona n.csv` → `oprav.py <projekt> n.csv [--zapsat]` | návrh oprav z nálezů → doplnit hodnoty (ručně / AI) → náhled → zápis do TMDL: popisy, skrytí, složky měr, formáty, výrazy měr (DAX) | úprava `*.tmdl` |
 | `menu_stranek.py <projekt>` | vysouvací menu „☰ Stránky“ na všech stránkách (záložky bez změny filtrů) | úprava projektu |
 | `pbip.py` | knihovna: `Projekt(cesta)` → stránky, vizuály, záložky, tabulky, sloupce, míry, vztahy | – |
 | `kontroly.py` | jednotlivé kontroly (nová kontrola = nová funkce s `@kontrola`) | – |
+| `dax.py` | statický rozbor DAX (volání funkcí, argumenty) a mechanické přepisy pro kontroly D01–D13 | – |
+| `html_report.py` | grafický HTML report (volá ho `audit.py --html`) | – |
+
+Příkazy níže spouštěj ze složky **nad** `pbip_audit` (kořen repa / rozbaleného zipu). Když už jsi uvnitř složky
+`pbip_audit`, vynech `pbip_audit/` – tedy `python audit.py …`.
 
 ```bash
 python pbip_audit/audit.py "cesta/k/MujReport" --vystup audit
+python pbip_audit/audit.py "cesta/k/MujReport" --vystup audit --html                 # + grafický report audit_MujReport.html
 python pbip_audit/audit.py "cesta/k/MujReport" --vystup audit --nastaveni klient.json --baseline audit/audit_MujReport.csv
 python pbip_audit/ai_dokumentace.py "cesta/k/MujReport" --vystup audit --bez-m
 python pbip_audit/menu_stranek.py "cesta/k/MujReport" --skupiny menu.json
@@ -121,8 +127,46 @@ Ověřeno na veřejných projektech: [RuiRomano/pbip-demo](https://github.com/Ru
 | M23 | AI | nejednotné termíny podle glosáře klienta („CC“ místo „Nákladové středisko“) – jen s `--nastaveni` |
 | M24 | model | neúplná rodina měr (je „Tržby Skutečnost“, chybí „Tržby Plán“) – jen s `--nastaveni` |
 
+| D01 | DAX | FILTER přes celou tabulku jako filtr CALCULATE → podmínka na sloupci (s KEEPFILTERS) |
+| D02 | DAX | dělení `/`, `IF ( b = 0 … )` nebo `IFERROR ( a / b … )` → DIVIDE |
+| D03 | DAX | `SUMX ( T, T[c] )` (i AVERAGEX, MINX, MAXX, COUNTX) → SUM / AVERAGE / … |
+| D04 | DAX | `COUNTROWS ( FILTER ( T, … ) )` → `CALCULATE ( COUNTROWS ( T ), … )` |
+| D05 | DAX | `CALCULATE ( [Míra] )` bez filtrů → `[Míra]` |
+| D06 | DAX | 3+ vnořené IF → `SWITCH ( TRUE (), … )` |
+| D07 | DAX | stejná míra 3× a víc ve výrazu → proměnná (VAR) |
+| D08 | DAX | filtr CALCULATE porovnává jen míry (`[Tržby] > 0`) – Desktop ho odmítne (chyba) |
+| D09 | DAX | EARLIER / EARLIEST → proměnná |
+| D10 | DAX | USERELATIONSHIP mezi sloupci bez vztahu (chyba) nebo na aktivní vztah (nic nedělá) |
+| D11 | DAX | časová funkce (TOTALYTD, SAMEPERIODLASTYEAR …) nad datem z faktové tabulky → sloupec kalendáře |
+| D12 | DAX | složitá míra (hloubka vnoření ≥ 7, 4+ CALCULATE, nebo > 500 znaků bez VAR) |
+| D13 | DAX | sloupec bez tabulky (`[Kč]`) / míra s tabulkou (`Prodej[Tržby]`) |
+
 M05 u měr neříká „smaž“: audit vidí jen tento report, ne další reporty, Excel ani dotazy přes XMLA nad stejným modelem.
 Před smazáním ověř Lineage / Impact analysis v Service.
+
+### Kvalita DAX a návrhy přepisu
+
+Kontroly D01–D13 čtou DAX staticky (bez Desktopu a bez dat) a u vzorů, které jdou přepsat mechanicky, rovnou navrhnou
+nový výraz celé míry. Návrhy jsou v `dax_<nazev>.md` (před / po) a v HTML reportu:
+
+- **přesná úprava** dává stejný výsledek (D03, D05, D06, D07, D13, D01 s `ALL ( sloupec )`, D02 – u dělení nulou vrátí
+  prázdno místo chyby). `oprav.py --sablona` ji předvyplní do řádku s akcí `dax`;
+- **úprava k ověření** mění chování, většinou proto, že opravuje chybu (D01 FILTER → KEEPFILTERS, D04, D11 datum
+  z faktu → kalendář). V šabloně je jen ve sloupci `kontext` – po porovnání čísel v Desktopu ji zkopíruj do `hodnota`.
+
+Rozbor nezná data ani kontext vizuálu: neřekne, jestli míra počítá „správné číslo“ v byznysovém smyslu, a návrhy
+u složitých měr (D12) nedělá. Na to je AI nad `model_<nazev>.md` – vysvětlí, co míra dělá, a navrhne přepis s
+vysvětlením; výsledek pak zapiš přes `oprav.py` (akce `dax`).
+
+### HTML report (`--html`)
+
+`audit_<nazev>.html` je jeden soubor bez externích zdrojů (otevřeš v prohlížeči, pošleš e-mailem, vytiskneš do PDF):
+metriky stavu, skóre AI po složkách, nálezy podle oblasti a závažnosti (filtry a hledání), doporučení u každé
+skupiny, DAX před / po a **Jak pokračovat** – pořadí kroků odvozené pravidly z nálezů (chyby → varování v modelu →
+RLS → DAX → nejslabší složky skóre AI → report → nový audit s `--baseline`). Světlý i tmavý režim podle systému.
+
+Jediné, co Python smysluplně nenapíše, je **slovní shrnutí pro klienta** (co čísla znamenají pro jeho reporting).
+Bez něj je v HTML hotový prompt pro AI; text od AI (nebo vlastní, Markdown) přidáš `--shrnuti shrnuti.md`.
 
 ### Nastavení klienta, výjimky, baseline, exit kódy
 
@@ -157,9 +201,9 @@ kalendář 5 %. Copilot i AI agenti nad modelem čtou právě názvy, popisy a s
 ## Doporučený postup auditu cizího reportu
 
 1. Ulož report jako PBIP (PBIR + TMDL) do samostatné složky a dej ji do gitu – každá úprava jde vrátit.
-2. `audit.py` → projdi nejdřív chyby (M10, M11, M20, M22, R11, S01, S05), pak varování (u RLS hlavně S02).
+2. `audit.py --html` → projdi nejdřív chyby (M10, M11, M20, M22, R11, S01, S05, D08, D10), pak varování (u RLS hlavně S02).
    Má-li klient vlastní terminologii, připrav `klient.json` (glosář, rodiny měr) a spouštěj s `--nastaveni`.
 3. `oprav.py --sablona` + `ai_dokumentace.py` → dej AI dokumentaci i šablonu a nech ji doplnit popisy, složky a formáty;
-   zkontroluj, pak `oprav.py … --zapsat` – nejrychlejší cesta ke skóre AI nad 80.
+   přesné přepisy DAX jsou předvyplněné, úpravy k ověření porovnej v Desktopu; zkontroluj, pak `oprav.py … --zapsat`.
 4. Přejmenování (M09, M13) dělej v Desktopu nebo Tabular Editoru – musí se opravit i odkazy v DAX a vizuálech.
-5. `porovnej.py zaloha/… aktualni/…` → před/po pro klienta.
+5. `porovnej.py zaloha/… aktualni/…` → před/po pro klienta; finální `audit.py --html --shrnuti shrnuti.md` jako výstup.

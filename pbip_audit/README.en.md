@@ -40,16 +40,22 @@ a copy with roles) and on synthetic tests. Tests: `python -m pytest pbip_audit/t
 
 | Script | What it does | Output |
 |---|---|---|
-| `audit.py <project> [--vse]` | 45 checks of the model, report, AI readiness and security (RLS/OLS) + AI readiness score 0–100; optional client settings, baseline and exit codes for CI | `audit_<name>.md`, `.csv` |
+| `audit.py <project> [--vse] [--html]` | 58 checks of the model, report, DAX quality, AI readiness and security (RLS/OLS) + AI readiness score 0–100; measure rewrite proposals; graphical HTML report; optional client settings, baseline and exit codes for CI | `audit_<name>.md`, `.csv` |
 | `ai_dokumentace.py <project>` | the whole model (tables, columns, measures with DAX, Power Query, relationships, roles) and report pages with their fields in one Markdown file – context for an LLM | `model_<name>.md` |
 | `porovnej.py <before> <after>` | compare two states: AI score per component, findings per check, resolved / new errors and warnings | `porovnani_<a>_<b>.md` |
-| `oprav.py <project> --sablona f.csv` → `oprav.py <project> f.csv [--zapsat]` | fix template from findings → fill in values (by hand or with AI) → preview → write into TMDL: descriptions, hiding, display folders, format strings | edits `*.tmdl` |
+| `oprav.py <project> --sablona f.csv` → `oprav.py <project> f.csv [--zapsat]` | fix template from findings → fill in values (by hand or with AI) → preview → write into TMDL: descriptions, hiding, display folders, format strings, measure expressions (DAX) | edits `*.tmdl` |
 | `menu_stranek.py <project>` | slide-out "☰ Pages" menu on every page (bookmarks that keep slicer selections) | edits the project |
 | `pbip.py` | library: `Projekt(path)` → pages, visuals, bookmarks, tables, columns, measures, relationships, roles | – |
 | `kontroly.py` | the individual checks (a new check = a new function decorated with `@kontrola`) | – |
+| `dax.py` | static DAX analysis (function calls, arguments) and mechanical rewrites for checks D01–D13 | – |
+| `html_report.py` | graphical HTML report (called by `audit.py --html`) | – |
+
+Run the commands below from the folder **above** `pbip_audit` (repo root / unzipped zip). If you are already inside
+`pbip_audit`, drop the `pbip_audit/` prefix – i.e. `python audit.py …`.
 
 ```bash
 python pbip_audit/audit.py "path/to/MyReport.pbip" --vystup audit                     # audit into folder ./audit
+python pbip_audit/audit.py "path/to/MyReport.pbip" --vystup audit --html              # + graphical report audit_MyReport.html
 python pbip_audit/audit.py "path/to/MyReport.pbip" --vystup audit --nastaveni client.json --baseline audit/audit_MyReport.csv --fail-on chyba
 python pbip_audit/ai_dokumentace.py "path/to/MyReport.pbip" --vystup audit --bez-m      # docs without Power Query
 python pbip_audit/porovnej.py "backup/MyReport.pbip" "path/to/MyReport.pbip" --vystup audit
@@ -71,6 +77,7 @@ action; **value**; finding code; context (DAX of the measure). Actions:
 | `skryt` | `isHidden` | `ano` (yes) / `ne` (no) – pre-filled `ano` for unused and technical columns |
 | `slozka` | `displayFolder` | folder name, e.g. `01 Sales` |
 | `format` | `formatString` | e.g. `#,0`, `0.0%` |
+| `dax` | the measure expression | new DAX – the template pre-fills exact rewrites only; rewrites to verify are in `kontext` |
 
 Rows with an empty value are skipped. `oprav.py` keeps the BOM, line endings (CRLF) and the property order Power BI
 Desktop uses (dataType, isHidden, formatString, displayFolder, lineageTag); running it again with the same CSV changes
@@ -168,6 +175,48 @@ too. `porovnej.py` matches findings by the same id.
 but 0 columns, or more than half of the relationship ends are missing from the loaded model, the audit says so at the
 top of the Markdown and returns 3 – instead of a silently "clean" result.
 
+| Code | Area | What it finds |
+|---|---|---|
+| D01 | DAX | FILTER over a whole table as a CALCULATE filter → column predicate (with KEEPFILTERS) |
+| D02 | DAX | division with `/`, `IF ( b = 0 … )` or `IFERROR ( a / b … )` → DIVIDE |
+| D03 | DAX | `SUMX ( T, T[c] )` (also AVERAGEX, MINX, MAXX, COUNTX) → SUM / AVERAGE / … |
+| D04 | DAX | `COUNTROWS ( FILTER ( T, … ) )` → `CALCULATE ( COUNTROWS ( T ), … )` |
+| D05 | DAX | `CALCULATE ( [Measure] )` without filters → `[Measure]` |
+| D06 | DAX | 3+ nested IFs → `SWITCH ( TRUE (), … )` |
+| D07 | DAX | the same measure 3+ times in one expression → variable (VAR) |
+| D08 | DAX | CALCULATE filter compares only measures (`[Sales] > 0`) – Desktop rejects it (error) |
+| D09 | DAX | EARLIER / EARLIEST → variable |
+| D10 | DAX | USERELATIONSHIP between columns without a relationship (error) or on the active one (no effect) |
+| D11 | DAX | time-intelligence function (TOTALYTD, SAMEPERIODLASTYEAR …) on a date from a fact table → date table column |
+| D12 | DAX | complex measure (nesting depth ≥ 7, 4+ CALCULATE, or > 500 characters without VAR) |
+| D13 | DAX | column without its table (`[Amount]`) / measure with a table (`Sales[Revenue]`) |
+
+### DAX quality and rewrite proposals
+
+Checks D01–D13 read DAX statically (no Desktop, no data) and, where a pattern can be rewritten mechanically, propose
+the new expression of the whole measure – in `dax_<name>.md` (before / after) and in the HTML report:
+
+- an **exact rewrite** returns the same result (D03, D05, D06, D07, D13, D01 with `ALL ( column )`, D02 – returns blank
+  instead of an error on division by zero). `oprav.py --sablona` pre-fills it in a row with action `dax`;
+- a **rewrite to verify** changes behaviour, usually because it fixes a bug (D01 FILTER → KEEPFILTERS, D04, D11 fact
+  date → date table). It is only in the `kontext` column – compare the numbers in Desktop, then copy it to `hodnota`.
+
+The analysis knows neither the data nor the visual context: it can't tell whether a measure returns the "right" number
+in business terms, and it doesn't rewrite complex measures (D12). That's a job for an AI over `model_<name>.md` – it can
+explain what a measure does and propose a rewrite with reasoning; write the result back with `oprav.py` (action `dax`).
+
+### HTML report (`--html`)
+
+`audit_<name>.html` is a single file with no external resources (open it in a browser, e-mail it, print to PDF):
+status metrics, AI score per component, findings by area and severity (filters and search), a recommendation for each
+group, DAX before / after and **Next steps** – an order of work derived by rules from the findings (errors → model
+warnings → RLS → DAX → weakest AI score components → report → re-run with `--baseline`). Light and dark mode follow
+the system. (The report text is in Czech.)
+
+The one thing Python can't write meaningfully is the **narrative summary for the client** (what the numbers mean for
+their reporting). Without it the HTML shows a ready-made AI prompt; add the AI's text (or your own, Markdown) with
+`--shrnuti summary.md`.
+
 **How the RLS check computes reach:** a role filter travels only along active relationships, from the one side to the
 many side (for many-to-many from the "to" side to the "from" side); the other way only for 1:1 relationships or with
 *Apply security filter in both directions*. RLS never uses USERELATIONSHIP or bidirectional cross-filtering without the
@@ -182,9 +231,9 @@ structure. (Until 11/2026 the score had only the first four components – older
 ## Recommended workflow for auditing someone else's report
 
 1. Save the report as PBIP (PBIR + TMDL) into its own folder and put it under git – every change can be reverted.
-2. `audit.py` → errors first (M10, M11, M20, M22, R11, S01, S05), then warnings (for RLS mainly S02).
+2. `audit.py --html` → errors first (M10, M11, M20, M22, R11, S01, S05, D08, D10), then warnings (for RLS mainly S02).
    If the client has its own terminology, prepare `client.json` (glossary, measure families) and run with `--nastaveni`.
 3. `oprav.py --sablona` + `ai_dokumentace.py` → give an AI both the documentation and the template and let it fill in
    descriptions, folders and formats; review, then `oprav.py … --zapsat` – the fastest way to an AI score above 80.
 4. Do renames (M09, M13) in Desktop or Tabular Editor – references in DAX and visuals must be fixed too.
-5. `porovnej.py backup/… current/…` → a before/after summary for the client.
+5. `porovnej.py backup/… current/…` → a before/after summary for the client; final `audit.py --html --shrnuti summary.md` as the deliverable.

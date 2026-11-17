@@ -537,3 +537,144 @@ def test_pojistka_parseru(tmp_path, monkeypatch):
     assert problemy and "0 sloupců" in problemy[0]
     assert spust_audit(monkeypatch, projekt, "--vystup", tmp_path / "out") == 3
     assert "Model se nenačetl správně" in (tmp_path / "out" / "audit_Novy.md").read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------ kvalita DAX (D…), oprav.py akce dax, HTML report
+DAX_CTX = {"miry": {"Tržby", "Náklady", "Marže"}, "sloupce": {("Prodej", "Kč"), ("Prodej", "Datum"), ("Prodej", "Typ"), ("Kalendář", "Datum")},
+           "typy": {("Prodej", "Datum"): "dateTime", ("Kalendář", "Datum"): "dateTime"}, "kalendare": {"Kalendář"},
+           "vztahy": [("Prodej", "Datum", "Kalendář", "Datum", True)]}
+
+
+@pytest.mark.parametrize("dax, kod, presny, po", [
+    ("CALCULATE ( [Tržby] )", "D05", True, "[Tržby]"),
+    ("SUMX ( Prodej, Prodej[Kč] )", "D03", True, "SUM ( Prodej[Kč] )"),
+    ('CALCULATE ( [Tržby], FILTER ( Prodej, Prodej[Typ] = "A" ) )', "D01", False, 'CALCULATE ( [Tržby], KEEPFILTERS ( Prodej[Typ] = "A" ) )'),
+    ('CALCULATE ( [Tržby], FILTER ( ALL ( Prodej[Typ] ), Prodej[Typ] = "A" ) )', "D01", True, 'CALCULATE ( [Tržby], Prodej[Typ] = "A" )'),
+    ("COUNTROWS ( FILTER ( Prodej, Prodej[Kč] > 100 ) )", "D04", False, "CALCULATE ( COUNTROWS ( Prodej ), KEEPFILTERS ( Prodej[Kč] > 100 ) )"),
+    ("IFERROR ( [Marže] / [Tržby], 0 )", "D02", True, "DIVIDE ( [Marže], [Tržby], 0 )"),
+    ("IF ( [Tržby] = 0, BLANK (), [Marže] / [Tržby] )", "D02", True, "DIVIDE ( [Marže], [Tržby] )"),
+    ("IF ( [Tržby] <> 0, [Marže] / [Tržby], 0 )", "D02", True, "DIVIDE ( [Marže], [Tržby], 0 )"),
+    ("[Marže] / [Tržby]", "D02", True, "DIVIDE ( [Marže], [Tržby] )"),
+    ("TOTALYTD ( [Tržby], Prodej[Datum] )", "D11", False, "TOTALYTD ( [Tržby], 'Kalendář'[Datum] )"),
+    ("SUM ( [Kč] )", "D13", True, "SUM ( Prodej[Kč] )"),
+    ("'Prodej'[Tržby] * 2", "D13", True, "[Tržby] * 2"),
+])
+def test_dax_navrhy(dax, kod, presny, po):
+    import dax as daxlib
+    n = next(x for x in daxlib.navrhy(dax, DAX_CTX) if x.kod == kod)
+    assert n.presny is presny and n.dax == po
+
+
+@pytest.mark.parametrize("dax", [
+    "[Tržby] / 1000",                                            # převod jednotek
+    "DIVIDE ( [Marže], [Tržby] )",
+    "SUMX ( Prodej, Prodej[Kč] * 2 )",                            # opravdový iterátor
+    "CALCULATE ( [Tržby], Prodej[Typ] = \"A, (B)\" ) // [Náklady] ( ,",   # čárky a závorky v řetězci a komentáři
+    "TOTALYTD ( [Tržby], 'Kalendář'[Datum] )",                    # správný kalendář
+    "VAR x = [Tržby] RETURN x",
+    "SUMX ( GENERATESERIES ( 1, 3 ), [Value] )",                  # implicitní sloupec
+    "IF ( [Tržby] > 0, [Tržby] * 2, CALCULATE ( [Tržby], ALL ( Prodej ) ) )",   # opakování uvnitř CALCULATE -> žádné VAR
+])
+def test_dax_bez_falesnych_nalezu(dax):
+    import dax as daxlib
+    assert [n.kod for n in daxlib.navrhy(dax, DAX_CTX)] == []
+
+
+def test_dax_switch_a_var_skladani():
+    import dax as daxlib
+    puv = 'IF ( [Tržby] > 100, "A", IF ( [Tržby] > 50, "B", IF ( [Tržby] > 10, "C", "D" ) ) )'
+    novy, kody = daxlib.zjednodus(puv, DAX_CTX)
+    assert set(kody) == {"D06", "D07"} and novy.startswith("VAR _Trzby = [Tržby]\nRETURN")
+    assert "SWITCH (" in novy and novy.count("_Trzby >") == 3 and "[Tržby] >" not in novy
+    assert daxlib.zjednodus(novy, DAX_CTX) == (novy, [])                          # podruhé už nic
+
+
+TMDL_DAX = """table Prodej
+
+\tmeasure Tržby = SUM ( Prodej[Kč] )
+\t\tformatString: #,0
+
+\tmeasure Celkem = CALCULATE ( [Tržby] )
+\t\tformatString: #,0
+
+\tmeasure Třída =
+\t\t\tIF ( [Tržby] > 100, "A",
+\t\t\t\tIF ( [Tržby] > 50, "B",
+\t\t\t\t\tIF ( [Tržby] > 10, "C", "D" ) ) )
+
+\tmeasure Velké = CALCULATE ( [Tržby], FILTER ( Prodej, Prodej[Kč] > 1000 ) )
+\t\tformatString: #,0
+
+\tmeasure Špatně = CALCULATE ( [Tržby], [Tržby] > 0 )
+
+\tmeasure Vztah = CALCULATE ( [Tržby], USERELATIONSHIP ( Prodej[Kč], Prodej[Datum] ) )
+
+\tcolumn Kč
+\t\tdataType: double
+\t\tsourceColumn: Kč
+
+\tcolumn Datum
+\t\tdataType: dateTime
+\t\tsourceColumn: Datum
+"""
+
+
+def dax_projekt(koren: Path) -> Path:
+    zapis(koren / "D.Report" / "definition.pbir", {"version": "4.0", "datasetReference": {"byPath": {"path": "../D.SemanticModel"}}})
+    zapis(koren / "D.Report" / "definition" / "pages" / "pages.json", {"pageOrder": []})
+    zapis(koren / "D.SemanticModel" / "definition" / "tables" / "Prodej.tmdl", TMDL_DAX)
+    return koren / "D.Report"
+
+
+def test_dax_kontroly_v_auditu(tmp_path):
+    k = nalezy_podle_kodu(Projekt(dax_projekt(tmp_path)))
+    assert {n.objekt for n in k["D05"]} == {"Prodej[Celkem]"} and k["D05"][0].presny
+    assert k["D01"][0].objekt == "Prodej[Velké]" and not k["D01"][0].presny and "KEEPFILTERS" in k["D01"][0].navrh
+    assert {n.kod for n in k["D06"] + k["D07"]} == {"D06", "D07"}
+    assert k["D08"][0].uroven == "chyba" and k["D08"][0].objekt == "Prodej[Špatně]"
+    assert k["D10"][0].uroven == "chyba"                                          # mezi Kč a Datum není vztah
+
+
+def test_oprav_dax_zapis(tmp_path):
+    import csv
+    from oprav import nacti_navrh, proved, sablona
+    rep = dax_projekt(tmp_path)
+    p = Projekt(rep)
+    navrh = tmp_path / "n.csv"
+    sablona(p, navrh)
+    dax_radky = [r for r in nacti_navrh(navrh) if r["akce"] == "dax"]
+    podle = {r["objekt"]: r for r in dax_radky}
+    assert podle["Prodej[Celkem]"]["hodnota"] == "[Tržby]"                       # přesné předvyplněné
+    assert podle["Prodej[Velké]"]["hodnota"] == "" and "KEEPFILTERS" in podle["Prodej[Velké]"]["kontext"]   # k ověření ne
+    podle["Prodej[Velké]"]["hodnota"] = podle["Prodej[Velké]"]["kontext"].split(": ", 1)[1]
+    with open(navrh, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["objekt", "typ", "akce", "hodnota", "nalez", "kontext"], delimiter=";", extrasaction="ignore")
+        w.writeheader(); w.writerows(dax_radky)
+    proved(p, nacti_navrh(navrh), zapsat=True)
+    q = Projekt(rep)
+    miry = {m.nazev: m for m in q.miry}
+    assert miry["Celkem"].dax == "[Tržby]" and miry["Celkem"].format == "#,0"
+    assert miry["Třída"].dax.startswith("VAR _Trzby = [Tržby]") and "SWITCH (" in miry["Třída"].dax
+    assert miry["Velké"].dax == "CALCULATE ( [Tržby], KEEPFILTERS ( Prodej[Kč] > 1000 ) )" and miry["Velké"].format == "#,0"
+    assert len(q.miry) == len(p.miry)
+    k = nalezy_podle_kodu(q)
+    assert not {"D01", "D05", "D06", "D07"} & set(k)
+    pred = (tmp_path / "D.SemanticModel" / "definition" / "tables" / "Prodej.tmdl").read_bytes()
+    proved(q, nacti_navrh(navrh), zapsat=True)                                    # idempotentní
+    assert (tmp_path / "D.SemanticModel" / "definition" / "tables" / "Prodej.tmdl").read_bytes() == pred
+
+
+def test_html_report(tmp_path, monkeypatch):
+    import audit
+    rep = dax_projekt(tmp_path / "p")
+    (tmp_path / "shrnuti.md").write_text("Model je **malý**.\n\n- první priorita\n- druhá", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["audit.py", str(rep), "--vystup", str(tmp_path / "out"), "--html",
+                                      "--shrnuti", str(tmp_path / "shrnuti.md")])
+    with pytest.raises(SystemExit) as konec:
+        audit.main()
+    assert konec.value.code == 0
+    h = (tmp_path / "out" / "audit_D.html").read_text(encoding="utf-8")
+    assert h.startswith("<!DOCTYPE html>") and "http" not in h.split("<footer>")[0].replace("http-equiv", "")   # bez externích zdrojů
+    assert "Jak pokračovat" in h and "Kvalita DAX" in h and "<strong>malý</strong>" in h and "<li>první priorita</li>" in h
+    assert "KEEPFILTERS ( Prodej[Kč] &gt; 1000 )" in h and "1 tabulka" in h
+    assert (tmp_path / "out" / "dax_D.md").exists()

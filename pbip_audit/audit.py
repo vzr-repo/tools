@@ -4,8 +4,10 @@
     python audit.py <složka> --vse        # všechny reporty ve složce a podsložkách (každý zvlášť + souhrn)
     python audit.py <projekt> --nastaveni klient.json --baseline audit/audit_X.csv --fail-on chyba   # CI / opakovaný audit
 
-Výstup: audit_<nazev>.md (souhrn, skóre AI připravenosti, nálezy podle oblastí) a audit_<nazev>.csv (všechny nálezy, se
-stabilním id).
+Výstup: audit_<nazev>.md (souhrn, skóre AI připravenosti, nálezy podle oblastí), audit_<nazev>.csv (všechny nálezy, se
+stabilním id), dax_<nazev>.md (navržené přepisy měr před / po, jsou-li) a s --html grafický audit_<nazev>.html.
+--html       samostatný HTML report (metriky, nálezy podle závažnosti a oblasti, doporučení, Jak pokračovat).
+--shrnuti    text (Markdown) slovního shrnutí do HTML – typicky od AI; bez něj je v HTML hotový prompt.
 
 --nastaveni  JSON klienta: glosář termínů (M23), rodiny měr (M24) a výjimky (potlačené nálezy s důvodem) – viz
              nastaveni_priklad.json.
@@ -115,12 +117,54 @@ def exit_kod(pocty: Counter, fail_on: str) -> int:
     return 0
 
 
+def dax_navrhy(p: Projekt, nalezy) -> list[dict]:
+    """Pro každou míru s nálezem D…: původní DAX, přepis jen přesnými úpravami a přepis včetně úprav k ověření."""
+    import dax as daxlib
+    from kontroly import _dax_kontext
+    ctx = _dax_kontext(p)
+    podle = {}
+    for n in nalezy:
+        if n.oblast == "dax":
+            podle.setdefault(n.objekt, []).append(n)
+    out = []
+    for m in p.miry:
+        kde = f"{m.tabulka}{m.plny}"
+        if kde not in podle:
+            continue
+        presny, kody_p = daxlib.zjednodus(m.dax, ctx, jen_presne=True)
+        vse, kody_v = daxlib.zjednodus(m.dax, ctx, jen_presne=False)
+        out.append({"objekt": kde, "tabulka": m.tabulka, "mira": m.nazev, "puvodni": m.dax, "nalezy": podle[kde],
+                    "presny": presny if kody_p else "", "kody_presne": kody_p,
+                    "vse": vse if vse != (presny if kody_p else m.dax) else "", "kody_vse": kody_v})
+    return out
+
+
+def dax_md(p: Projekt, navrhy: list[dict]) -> list[str]:
+    md = [f"# Návrhy úprav DAX – {p.nazev}", "",
+          "**Přesná úprava** dává stejný výsledek (refaktoring) – dá se převzít rovnou. **Úprava k ověření** mění chování "
+          "(opravuje chybu nebo mění filtr) – před nasazením porovnej čísla v Desktopu. Zapsat do modelu jde přes "
+          "`oprav.py --sablona` (řádky s akcí `dax`).", ""]
+    for x in navrhy:
+        md += [f"## {x['objekt']}", ""]
+        md += [f"- {n.kod} ({'přesné' if n.presny else 'ověřit' if n.navrh else 'bez návrhu'}): {n.popis}" for n in x["nalezy"]]
+        md += ["", "Původní:", "", "```dax", x["puvodni"], "```", ""]
+        if x["presny"]:
+            md += [f"Přesná úprava ({', '.join(x['kody_presne'])}):", "", "```dax", x["presny"], "```", ""]
+        if x["vse"]:
+            md += [f"Včetně úprav k ověření ({', '.join(x['kody_vse'])}):", "", "```dax", x["vse"], "```", ""]
+        if not x["presny"] and not x["vse"]:
+            md += ["Automatický přepis není – viz doporučení u nálezu.", ""]
+    return md
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("projekt")
     ap.add_argument("--vystup", default=".")
     ap.add_argument("--bez-info", action="store_true", help="vynechat nálezy úrovně info")
     ap.add_argument("--vse", action="store_true", help="auditovat všechny reporty ve složce")
+    ap.add_argument("--html", action="store_true", help="navíc grafický report audit_<nazev>.html (jeden soubor, otevře se v prohlížeči)")
+    ap.add_argument("--shrnuti", metavar="MD", help="text shrnutí (např. od AI) do HTML reportu")
     ap.add_argument("--nastaveni", help="JSON klienta: terminy, rodiny, vyjimky")
     ap.add_argument("--baseline", help="CSV z předchozího auditu – porovnat nové / vyřešené nálezy")
     ap.add_argument("--fail-on", choices=["nic", "chyba", "varovani"], default="nic", help="kdy vrátit nenulový exit kód")
@@ -194,7 +238,8 @@ def audituj(p: Projekt, a):
           "| Složka | % | Váha |", "|---|---|---|"] + [f"| {k} | {v} | {round(VAHY_AI[k] * 100)} % |" for k, v in sk.items() if k != "skore"] + [
           "", "AI (Copilot, agenti nad modelem) čte názvy a popisy tabulek, sloupců a měr. Čím víc popisů a méně technického šumu,",
           "tím přesnější odpovědi.", ""]
-    for oblast, nazev in (("model", "Model"), ("report", "Report"), ("ai", "Připravenost pro AI"), ("rls", "Zabezpečení (RLS / OLS)")):
+    for oblast, nazev in (("model", "Model"), ("report", "Report"), ("ai", "Připravenost pro AI"), ("rls", "Zabezpečení (RLS / OLS)"),
+                          ("dax", "Kvalita DAX")):
         if oblast == "rls" and not p.role:
             md += ["## Zabezpečení (RLS / OLS)", "", "Model nemá žádné role – RLS se nekontroluje.", ""]
             continue
@@ -211,7 +256,16 @@ def audituj(p: Projekt, a):
             if len(skupina) > 25:
                 md.append(f"- … a dalších {len(skupina) - 25} (viz CSV)")
             md.append("")
+    navrhy = dax_navrhy(p, nalezy)
+    if navrhy:
+        md += [f"Navržené přepisy měr (před / po): `dax_{p.nazev}.md`", ""]
+        (out / f"dax_{p.nazev}.md").write_text("\n".join(dax_md(p, navrhy)), encoding="utf-8")
     (out / f"audit_{p.nazev}.md").write_text("\n".join(md), encoding="utf-8")
+    if getattr(a, "html", False):
+        from html_report import html_report
+        shrnuti = Path(a.shrnuti).read_text(encoding="utf-8-sig") if getattr(a, "shrnuti", None) else ""
+        (out / f"audit_{p.nazev}.html").write_text(html_report(p, nalezy, sk, problemy, potlacene, navrhy, zmeny, shrnuti), encoding="utf-8")
+        print(f"-> {out / f'audit_{p.nazev}.html'}")
     kod = 3 if problemy else exit_kod(pocty, getattr(a, "fail_on", "nic"))
     print(f"Audit {p.nazev}: {pocty['chyba']} chyb, {pocty['varovani']} varování, {pocty['info']} info; AI skóre {sk['skore']}/100"
           + (f"; baseline: +{zmeny[0]} nových, {zmeny[1]} vyřešených" if zmeny else "")
