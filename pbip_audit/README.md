@@ -69,12 +69,23 @@ python pbip_audit/oprav.py "cesta/k/MujReport.pbip" navrh.csv --zapsat     # zá
 displayFolder, lineageTag); opakované spuštění se stejným návrhem nic nezmění. Po zápisu projekt znovu načte a ověří,
 že počty tabulek / sloupců / měr sedí. Přejmenování záměrně neumí (musí se opravit i odkazy v DAX a vizuálech).
 
-## Skill pro Claude Code
+## Plugin / skill pro Claude Code
 
-`skill/SKILL.md` + skripty = skill **pbip-audit**: v Claude Code stačí napsat např. „zkontroluj mi report v C:\…\Sales.pbip“
-nebo „připrav můj model pro Copilota“ – Claude se zeptá na cestu, spustí audit a dokumentaci, shrne výsledek a nabídne
-další kroky (návrh popisů, skrytí polí) – nic nemění bez souhlasu. Instalace / aktualizace po změně skriptů:
-`python pbip_audit/instaluj_skill.py` (zkopíruje do `~/.claude/skills/pbip-audit`).
+Skill **pbip-audit**: v Claude Code stačí napsat např. „zkontroluj mi report v C:\…\Sales.pbip“ nebo „připrav můj model
+pro Copilota“ – Claude se zeptá na cestu, spustí audit a dokumentaci, shrne výsledek a nabídne další kroky (návrh popisů,
+skrytí polí) – nic nemění bez souhlasu.
+
+**Instalace jako plugin (doporučeno)** – v Claude Code:
+
+```
+/plugin marketplace add vzr-repo/tools
+/plugin install pbip-audit@vzr-tools
+```
+
+Aktualizace: `/plugin marketplace update vzr-tools` (nebo zapnutá automatická aktualizace marketplace).
+
+**Ruční instalace** (např. při vývoji skriptů): `python pbip_audit/instaluj_skill.py` – zkopíruje skill a skripty do
+`~/.claude/skills/pbip-audit`; spusť po každé změně skriptů. Plugin a ruční instalaci nemíchej, jinak budeš mít skill dvakrát.
 
 Ověřeno na veřejných projektech: [RuiRomano/pbip-demo](https://github.com/RuiRomano/pbip-demo),
 [RuiRomano/pbip-demo-agentic](https://github.com/RuiRomano/pbip-demo-agentic),

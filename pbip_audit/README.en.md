@@ -85,13 +85,24 @@ Desktop uses (dataType, isHidden, formatString, displayFolder, lineageTag); runn
 nothing. After writing it reloads the project and checks that the table / column / measure counts still match.
 It deliberately does **not** rename objects – a rename also has to fix references in DAX and visuals.
 
-## Claude Code skill
+## Claude Code plugin / skill
 
-`skill/SKILL.md` + the scripts = the **pbip-audit** skill. In Claude Code just say e.g. "audit my report in
-C:\…\Sales.pbip" or "get my model ready for Copilot" – Claude asks for the path, runs the audit and documentation,
-summarises the result and offers next steps (description proposals, hiding fields) – it changes nothing without your
-consent. Install / update after changing the scripts: `python pbip_audit/instaluj_skill.py`. When you write to Claude in English, the skill runs the scripts with `--lang en`
-(copies into `~/.claude/skills/pbip-audit`).
+The **pbip-audit** skill: in Claude Code just say e.g. "audit my report in C:\…\Sales.pbip" or "get my model ready for
+Copilot" – Claude asks for the path, runs the audit and documentation, summarises the result and offers next steps
+(description proposals, hiding fields) – it changes nothing without your consent. When you write to Claude in English,
+the skill runs the scripts with `--lang en`.
+
+**Install as a plugin (recommended)** – in Claude Code:
+
+```
+/plugin marketplace add vzr-repo/tools
+/plugin install pbip-audit@vzr-tools
+```
+
+Update: `/plugin marketplace update vzr-tools` (or turn on auto-update for the marketplace).
+
+**Manual install** (e.g. while developing the scripts): `python pbip_audit/instaluj_skill.py` – copies the skill and the
+scripts into `~/.claude/skills/pbip-audit`; run it after every change. Don't use both, or you'll have the skill twice.
 
 Tested on public projects: [RuiRomano/pbip-demo](https://github.com/RuiRomano/pbip-demo),
 [RuiRomano/pbip-demo-agentic](https://github.com/RuiRomano/pbip-demo-agentic),

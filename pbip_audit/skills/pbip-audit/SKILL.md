@@ -5,13 +5,21 @@ description: Audit libovolného Power BI reportu uloženého jako PBIP a přípr
 
 # Audit Power BI projektu (PBIP)
 
-Skripty ve složce `scripts/` (vedle tohoto souboru) čtou projekt PBIP přímo ze souborů – bez Power BI Desktopu, bez
+Skripty (složka `<SCRIPTS>`, viz níže) čtou projekt PBIP přímo ze souborů – bez Power BI Desktopu, bez
 připojení a bez instalace balíčků (stačí Python 3.10+). Audit nic nemění; jediný skript, který report upravuje, je
 `menu_stranek.py` a `oprav.py --zapsat` – ty pouštěj jen na výslovné přání.
 
 Podporované formáty: report PBIR (`definition/pages`) i starší `report.json`; model TMDL i `model.bim`
 (`*.SemanticModel` i `*.Dataset`); tenký report napojený na model v Service (pak jen kontroly reportu);
 víc reportů v jedné složce (párují se s modelem podle `definition.pbir`).
+
+## Kde jsou skripty (`<SCRIPTS>`)
+`<SKILL>` je složka tohoto souboru. Skripty leží podle způsobu instalace:
+- **plugin** (`/plugin install pbip-audit@vzr-tools`): o dvě úrovně výš, `<SKILL>/../..` (tam je `audit.py`),
+- **ruční instalace** (`instaluj_skill.py`) nebo rozbalený skill: `<SKILL>/scripts`.
+
+Na začátku jednou ověř, kde leží `audit.py` (`Test-Path` / `ls`), a tu složku dál používej jako `<SCRIPTS>`.
+Do složky pluginu nic nezapisuj – výstupy patří vedle auditovaného projektu.
 
 ## Postup
 
@@ -32,13 +40,13 @@ Když složka obsahuje víc reportů, zeptej se, jestli auditovat jeden (který)
 Python najdi příkazem `python --version` (na Windows případně `py --version`). Výstupy ukládej do složky
 `audit_<název reportu>` ve stejné složce, kde leží soubor `.pbip` (ne dovnitř `*.Report` / `*.SemanticModel`),
 pokud uživatel neřekne jinak; skript ji vytvoří sám. Když ve stejné složce leží i další reporty, zmiň je v shrnutí
-jednou větou a nabídni jejich audit (`--vse`). `<SKILL>` je složka tohoto souboru.
+jednou větou a nabídni jejich audit (`--vse`).
 
 ```powershell
-python "<SKILL>/scripts/audit.py" "<cesta k .pbip nebo složce>" --vystup "<výstup>" --html    # jeden report + HTML
-python "<SKILL>/scripts/audit.py" "<složka>" --vse --vystup "<výstup>"                         # všechny reporty
-python "<SKILL>/scripts/audit.py" "<cesta>" --vystup "<výstup>" --nastaveni "<klient.json>" --baseline "<výstup>/audit_<název>.csv"
-python "<SKILL>/scripts/ai_dokumentace.py" "<cesta>" --vystup "<výstup>" --bez-m                 # dokumentace pro AI
+python "<SCRIPTS>/audit.py" "<cesta k .pbip nebo složce>" --vystup "<výstup>" --html    # jeden report + HTML
+python "<SCRIPTS>/audit.py" "<složka>" --vse --vystup "<výstup>"                         # všechny reporty
+python "<SCRIPTS>/audit.py" "<cesta>" --vystup "<výstup>" --nastaveni "<klient.json>" --baseline "<výstup>/audit_<název>.csv"
+python "<SCRIPTS>/ai_dokumentace.py" "<cesta>" --vystup "<výstup>" --bez-m                 # dokumentace pro AI
 ```
 
 Výstupy: `audit_<název>.md` (souhrn, skóre AI, nálezy podle oblastí s doporučením), `audit_<název>.csv` (všechny
@@ -49,7 +57,7 @@ před / po, jsou-li), `model_<název>.md` (celý model a stránky pro AI), u `--
 týmu, jen z `audit_<název>.md` a `model_<název>.md`, bez vymyšlených čísel. Ulož jako `<výstup>/shrnuti.md` a spusť
 audit znovu s `--html --shrnuti "<výstup>/shrnuti.md"`. Nabídni to, nedělej to bez souhlasu.
 
-Nastavení klienta (`--nastaveni`, vzor `<SKILL>/scripts/nastaveni_priklad.json`): glosář termínů (M23), rodiny měr
+Nastavení klienta (`--nastaveni`, vzor `<SCRIPTS>/nastaveni_priklad.json`): glosář termínů (M23), rodiny měr
 (M24) a výjimky s povinným důvodem. Použij ho, když uživatel zmíní firemní terminologii nebo opakovaný audit; výjimky
 přidávej jen na jeho výslovné přání. `--baseline` = předchozí CSV téhož reportu (smí být i tentýž soubor).
 Exit kód 3 a sekce „Model se nenačetl správně“ znamenají, že parser model nepřečetl – výsledky modelu pak nepoužívej,
@@ -80,7 +88,7 @@ Zakonči shrnutí krátkou nabídkou, např.: „Můžu navrhnout popisy pro N m
 nebo audit spustit na dalších reportech ve složce. Co z toho chceš?“ Umístění nálezů ve výstupu jsou ve tvaru
 „Stránka / titulek nebo typ vizuálu (id)“ – v shrnutí je používej tak, jak jsou.
 - **Návrh popisů, složek, formátů a skrytí (jen TMDL):**
-  1. `python "<SKILL>/scripts/oprav.py" "<cesta>" --sablona "<výstup>/navrh.csv"` – řádky z nálezů M01–M03
+  1. `python "<SCRIPTS>/oprav.py" "<cesta>" --sablona "<výstup>/navrh.csv"` – řádky z nálezů M01–M03
      (popis), M05/M06 (skrytí, předvyplněno „ano“), M14 (složka), M04/M16 (formát); sloupec `kontext` má DAX.
   2. Doplň sloupec `hodnota` z `model_<název>.md` (popis = co měří, jednotka, období, jazyk podle modelu). Řádky,
      kde si nejsi jistý, nech prázdné. Ukaž uživateli souhrn (počty, pár příkladů) a cestu k CSV k revizi.
@@ -90,8 +98,8 @@ nebo audit spustit na dalších reportech ve složce. Co z toho chceš?“ Umís
   sloupci `kontext` – převezmi je jen po souhlasu uživatele a s doporučením porovnat čísla v Desktopu. U složitých
   měr (D12) můžeš navrhnout přepis sám z `model_<název>.md`: vysvětli, co míra dělá, a nový výraz dej do `hodnota`.
 - **Porovnání před/po:** zálohu (kopie složky / jiný commit) a aktuální stav porovnej
-  `python "<SKILL>/scripts/porovnej.py" "<před>" "<po>" --vystup "<výstup>"` a shrň změnu skóre a vyřešené nálezy.
-- **Menu stránek** (jen PBIR, jen na přání): `python "<SKILL>/scripts/menu_stranek.py" "<cesta>"`. Před spuštěním
+  `python "<SCRIPTS>/porovnej.py" "<před>" "<po>" --vystup "<výstup>"` a shrň změnu skóre a vyřešené nálezy.
+- **Menu stránek** (jen PBIR, jen na přání): `python "<SCRIPTS>/menu_stranek.py" "<cesta>"`. Před spuštěním
   uložit v Desktopu a zálohovat; po spuštění v Desktopu neukládat, zavřít bez uložení a otevřít znovu.
 
 ## Co jednotlivé kontroly znamenají

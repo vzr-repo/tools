@@ -1,0 +1,18 @@
+{
+  "name": "vzr-tools",
+  "owner": {
+    "name": "Jakub Vozar",
+    "url": "https://jakubvozar.cz"
+  },
+  "metadata": {
+    "description": "Free tools for Power BI and data work by Jakub Vozar"
+  },
+  "plugins": [
+    {
+      "name": "pbip-audit",
+      "source": "./pbip_audit",
+      "description": "Audit any Power BI project (PBIP) without Power BI Desktop: 58 checks, AI readiness score, DAX rewrites, RLS, HTML report, model docs for LLMs, before/after comparison and bulk TMDL fixes.",
+      "category": "data"
+    }
+  ]
+}

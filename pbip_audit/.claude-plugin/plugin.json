@@ -1,0 +1,12 @@
+{
+  "name": "pbip-audit",
+  "description": "Audit any Power BI project (PBIP) without Power BI Desktop: 58 checks of the model, report, DAX quality, AI/Copilot readiness and RLS, AI readiness score 0-100, DAX rewrite proposals, HTML report, model documentation for LLMs, before/after comparison and bulk fixes in TMDL.",
+  "author": {
+    "name": "Jakub Vozar",
+    "url": "https://jakubvozar.cz"
+  },
+  "homepage": "https://github.com/vzr-repo/tools/tree/main/pbip_audit",
+  "repository": "https://github.com/vzr-repo/tools",
+  "license": "MIT",
+  "keywords": ["power-bi", "pbip", "tmdl", "dax", "audit", "copilot", "ai-readiness"]
+}
